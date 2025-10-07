@@ -71,133 +71,132 @@ async def mentor_router(req: Request):
     # 🟢 START / RESUME FLOW
     # ──────────────────────────────────────────────
     if intent in ("start", "resume", "get_phase"):
-    try:
-        # Step 1️⃣ Get current pointer
-        pointer_res = supabase.rpc("get_pointer_status", {
-            "p_student_id": user_id,
-            "p_chapter_id": chapter_id
-        }).execute()
-        logging.info(f"🧭 get_pointer_status → {pointer_res.data}")
+        try:
+            # Step 1️⃣ Get current pointer
+            pointer_res = supabase.rpc("get_pointer_status", {
+                "p_student_id": user_id,
+                "p_chapter_id": chapter_id
+            }).execute()
+            logging.info(f"🧭 get_pointer_status → {pointer_res.data}")
 
-        react_order = pointer_res.data[0]["react_order"] if pointer_res.data else None
-        is_completed = pointer_res.data[0]["is_completed"] if pointer_res.data else None
+            react_order = pointer_res.data[0]["react_order"] if pointer_res.data else None
+            is_completed = pointer_res.data[0]["is_completed"] if pointer_res.data else None
 
-        # Step 2️⃣ Get current phase content
-        phase_res = supabase.rpc("get_phase_content", {
-            "p_chapter_id": chapter_id,
-            "p_react_order": react_order,
-            "p_is_completed": is_completed
-        }).execute()
-        logging.info(f"📚 get_phase_content → {len(phase_res.data)} rows")
+            # Step 2️⃣ Get current phase content
+            phase_res = supabase.rpc("get_phase_content", {
+                "p_chapter_id": chapter_id,
+                "p_react_order": react_order,
+                "p_is_completed": is_completed
+            }).execute()
+            logging.info(f"📚 get_phase_content → {len(phase_res.data)} rows")
 
-        if not phase_res.data:
-            return {"error": "No phase content found"}
+            if not phase_res.data:
+                return {"error": "No phase content found"}
 
-        phase = phase_res.data[0]
+            phase = phase_res.data[0]
 
-        # Step 3️⃣ Update pointer
-        react_order = phase.get("react_order")
-        supabase.rpc("update_pointer_status", {
-            "p_student_id": user_id,
-            "p_chapter_id": chapter_id,
-            "p_react_order": react_order
-        }).execute()
-        logging.info(f"🕒 update_pointer_status → {react_order}")
+            # Step 3️⃣ Update pointer
+            react_order = phase.get("react_order")
+            supabase.rpc("update_pointer_status", {
+                "p_student_id": user_id,
+                "p_chapter_id": chapter_id,
+                "p_react_order": react_order
+            }).execute()
+            logging.info(f"🕒 update_pointer_status → {react_order}")
 
-        # Step 4️⃣ Wrap response in AdaptiveChat-compatible JSON
-        payload = {
-            "type": phase.get("phase_type", "concept"),
-            "data": {
-                **phase.get("phase_json", {}),
-                "phase_id": phase.get("phase_id"),
-                "current": phase.get("current"),
-                "total": phase.get("total")
-            },
-            "messages": [
-                {
-                    "sender": "ai",
-                    "type": "text",
-                    "content": f"Starting {phase.get('phase_type', 'concept')} "
-                               f"({phase.get('current')}/{phase.get('total')})"
-                }
-            ],
-        }
+            # Step 4️⃣ Wrap response in AdaptiveChat-compatible JSON
+            payload = {
+                "type": phase.get("phase_type", "concept"),
+                "data": {
+                    **(phase.get("phase_json") or {}),
+                    "phase_id": phase.get("phase_id"),
+                    "current": phase.get("current"),
+                    "total": phase.get("total")
+                },
+                "messages": [
+                    {
+                        "sender": "ai",
+                        "type": "text",
+                        "content": f"Starting {phase.get('phase_type', 'concept')} "
+                                   f"({phase.get('current')}/{phase.get('total')})"
+                    }
+                ],
+            }
 
-        return payload
+            return payload
 
-    except Exception as e:
-        logging.error(f"❌ Error in start/resume flow: {e}")
-        return {"error": str(e)}
-
+        except Exception as e:
+            logging.error(f"❌ Error in start/resume flow: {e}")
+            return {"error": str(e)}
 
     # ──────────────────────────────────────────────
     # 🟣 NEXT PHASE FLOW
     # ──────────────────────────────────────────────
     elif intent == "next":
-    try:
-        pointer_res = supabase.rpc("get_pointer_status", {
-            "p_student_id": user_id,
-            "p_chapter_id": chapter_id
-        }).execute()
+        try:
+            pointer_res = supabase.rpc("get_pointer_status", {
+                "p_student_id": user_id,
+                "p_chapter_id": chapter_id
+            }).execute()
 
-        if not pointer_res.data:
-            return {"error": "No pointer found"}
+            if not pointer_res.data:
+                return {"error": "No pointer found"}
 
-        react_order = pointer_res.data[0]["react_order"]
+            react_order = pointer_res.data[0]["react_order"]
 
-        # 1️⃣ Mark complete
-        supabase.rpc("complete_pointer_status", {
-            "p_student_id": user_id,
-            "p_chapter_id": chapter_id,
-            "p_react_order": react_order
-        }).execute()
-        logging.info(f"✅ complete_pointer_status → {react_order}")
+            # 1️⃣ Mark complete
+            supabase.rpc("complete_pointer_status", {
+                "p_student_id": user_id,
+                "p_chapter_id": chapter_id,
+                "p_react_order": react_order
+            }).execute()
+            logging.info(f"✅ complete_pointer_status → {react_order}")
 
-        # 2️⃣ Fetch next
-        phase_res = supabase.rpc("get_phase_content", {
-            "p_chapter_id": chapter_id,
-            "p_react_order": react_order,
-            "p_is_completed": True
-        }).execute()
+            # 2️⃣ Fetch next
+            phase_res = supabase.rpc("get_phase_content", {
+                "p_chapter_id": chapter_id,
+                "p_react_order": react_order,
+                "p_is_completed": True
+            }).execute()
 
-        if not phase_res.data:
-            return {"error": "No next phase found"}
+            if not phase_res.data:
+                return {"error": "No next phase found"}
 
-        phase = phase_res.data[0]
+            phase = phase_res.data[0]
 
-        # 3️⃣ Update pointer to next
-        next_react_order = phase.get("react_order")
-        supabase.rpc("update_pointer_status", {
-            "p_student_id": user_id,
-            "p_chapter_id": chapter_id,
-            "p_react_order": next_react_order
-        }).execute()
-        logging.info(f"🕒 update_pointer_status(next) → {next_react_order}")
+            # 3️⃣ Update pointer to next
+            next_react_order = phase.get("react_order")
+            supabase.rpc("update_pointer_status", {
+                "p_student_id": user_id,
+                "p_chapter_id": chapter_id,
+                "p_react_order": next_react_order
+            }).execute()
+            logging.info(f"🕒 update_pointer_status(next) → {next_react_order}")
 
-        # 4️⃣ Return in AdaptiveChat structure
-        payload = {
-            "type": phase.get("phase_type", "concept"),
-            "data": {
-                **phase.get("phase_json", {}),
-                "phase_id": phase.get("phase_id"),
-                "current": phase.get("current"),
-                "total": phase.get("total")
-            },
-            "messages": [
-                {
-                    "sender": "ai",
-                    "type": "text",
-                    "content": f"Next {phase.get('phase_type', 'concept')} "
-                               f"({phase.get('current')}/{phase.get('total')})"
-                }
-            ],
-        }
+            # 4️⃣ Return in AdaptiveChat structure
+            payload = {
+                "type": phase.get("phase_type", "concept"),
+                "data": {
+                    **(phase.get("phase_json") or {}),
+                    "phase_id": phase.get("phase_id"),
+                    "current": phase.get("current"),
+                    "total": phase.get("total")
+                },
+                "messages": [
+                    {
+                        "sender": "ai",
+                        "type": "text",
+                        "content": f"Next {phase.get('phase_type', 'concept')} "
+                                   f"({phase.get('current')}/{phase.get('total')})"
+                    }
+                ],
+            }
 
-        return payload
+            return payload
 
-    except Exception as e:
-        logging.error(f"❌ Error in next flow: {e}")
-        return {"error": str(e)}
+        except Exception as e:
+            logging.error(f"❌ Error in next flow: {e}")
+            return {"error": str(e)}
 
     # ──────────────────────────────────────────────
     # 💬 CHAT (ASK DOUBT)
@@ -235,4 +234,3 @@ async def mentor_router(req: Request):
     else:
         logging.warning(f"⚠️ Unknown intent received: {intent}")
         return {"error": "Unknown intent"}
-
