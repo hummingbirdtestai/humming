@@ -145,21 +145,26 @@ async def mentor_router(req: Request):
             }).execute()
             logging.info(f"🕒 update_pointer_status → {react_order}")
 
-            # Step 4️⃣ Wrap response in AdaptiveChat-compatible JSON
+            # Step 4️⃣ Prepare frontend-ready payload
+            phase_type = phase.get("phase_type", "concept")
+            phase_json = phase.get("phase_content") or {}
+            
+            # Base data
+            data_block = { **phase_json, "phase_id": phase.get("phase_id") }
+            
+            # 🧠 Add current/total only for concept phase
+            if phase_type == "concept":
+                data_block["current"] = phase.get("current")
+                data_block["total"] = phase.get("total")
+            
             payload = {
-                "type": phase.get("phase_type", "concept"),
-                "data": {
-                    **(phase.get("phase_content") or {}),
-                    "phase_id": phase.get("phase_id"),
-                    "current": phase.get("current"),
-                    "total": phase.get("total")
-                },
+                "type": phase_type,
+                "data": data_block,
                 "messages": [
                     {
                         "sender": "ai",
                         "type": "text",
-                        "content": f"Starting {phase.get('phase_type', 'concept')} "
-                                   f"({phase.get('current')}/{phase.get('total')})"
+                        "content": f"Starting {phase_type}"
                     }
                 ],
             }
@@ -275,4 +280,5 @@ async def mentor_router(req: Request):
     else:
         logging.warning(f"⚠️ Unknown intent received: {intent}")
         return {"error": "Unknown intent"}
+
 
