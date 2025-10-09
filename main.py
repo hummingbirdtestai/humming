@@ -40,6 +40,21 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 client = OpenAI(api_key=OPENAI_KEY)
 
 # ──────────────────────────────────────────────
+# 🪶 FAULT-TOLERANT SUPABASE WRAPPER
+# ──────────────────────────────────────────────
+def safe_rpc(name: str, payload: dict):
+    """Execute Supabase RPC safely with logging and None fallback."""
+    try:
+        res = supabase.rpc(name, payload).execute()
+        if res.error:
+            logging.error(f"❌ RPC {name} failed: {res.error}")
+            return None
+        return res
+    except Exception as e:
+        logging.error(f"⚠️ RPC {name} threw exception: {e}")
+        return None
+
+# ──────────────────────────────────────────────
 # 🏠 ROOT ENDPOINT
 # ──────────────────────────────────────────────
 @app.get("/")
@@ -73,10 +88,10 @@ async def mentor_router(req: Request):
     if intent in ("start", "resume", "get_phase"):
         try:
             # Step 1️⃣ Get current pointer
-            pointer_res = supabase.rpc("get_pointer_status", {
+            pointer_res = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
-            }).execute()
+            })
             logging.info(f"🧭 get_pointer_status → {pointer_res.data}")
 
             react_order = pointer_res.data[0]["react_order"] if pointer_res.data else None
@@ -122,37 +137,38 @@ async def mentor_router(req: Request):
             logging.info(f"🧩 Recognized phase_type={phase_type}")
             
             # Compute totals for in-phase arrays
-           if phase_type == "conversation":
-            total_hyfs = len(phase_json.get("HYFs", []))
-            supabase.rpc("update_local_tracker_status", {
-                "p_student_id": user_id,
-                "p_phase_id": phase.get("phase_id"),
-                "p_chapter_id": chapter_id,
-                "p_phase_type": phase_type,
-                "p_tracker_type": "conversation",
-                "p_current_hyf_index": 0,
-                "p_total_hyfs": total_hyfs,
-                "p_meta": json.dumps(phase_json),   # 🆕 cache full HYFs JSON
-                "p_is_completed": False
-            }).execute()
-            logging.info(f"📍 Local tracker initialized for conversation → total_hyfs={total_hyfs} | meta cached ✅")
-            logging.debug(f"🧩 Stored meta preview → {json.dumps(phase_json)[:200]}...")
+            if phase_type == "conversation":
+                total_hyfs = len(phase_json.get("HYFs", []))
+                supabase.rpc("update_local_tracker_status", {
+                    "p_student_id": user_id,
+                    "p_phase_id": phase.get("phase_id"),
+                    "p_chapter_id": chapter_id,
+                    "p_phase_type": phase_type,
+                    "p_tracker_type": "conversation",
+                    "p_current_hyf_index": 0,
+                    "p_total_hyfs": total_hyfs,
+                    "p_meta": json.dumps(phase_json),   # 🆕 cache full HYFs JSON
+                    "p_is_completed": False
+                }).execute()
+                logging.info(f"📍 Local tracker initialized for conversation → total_hyfs={total_hyfs} | meta cached ✅")
+                logging.debug(f"🧩 Stored meta preview → {json.dumps(phase_json)[:200]}...")
             
             elif phase_type == "mcq":
-            total_mcqs = len(phase_json if isinstance(phase_json, list) else [])
-            supabase.rpc("update_local_tracker_status", {
-                "p_student_id": user_id,
-                "p_phase_id": phase.get("phase_id"),
-                "p_chapter_id": chapter_id,
-                "p_phase_type": phase_type,
-                "p_tracker_type": "concept_mcq",
-                "p_current_mcq_index": 0,
-                "p_total_mcqs": total_mcqs,
-                "p_meta": json.dumps(phase_json),   # 🆕 cache full MCQ JSON
-                "p_is_completed": False
-            }).execute()
-            logging.info(f"📍 Local tracker initialized for mcq → total_mcqs={total_mcqs} | meta cached ✅")
-            logging.debug(f"🧩 Stored meta preview → {json.dumps(phase_json)[:200]}...")
+                total_mcqs = len(phase_json if isinstance(phase_json, list) else [])
+                supabase.rpc("update_local_tracker_status", {
+                    "p_student_id": user_id,
+                    "p_phase_id": phase.get("phase_id"),
+                    "p_chapter_id": chapter_id,
+                    "p_phase_type": phase_type,
+                    "p_tracker_type": "concept_mcq",
+                    "p_current_mcq_index": 0,
+                    "p_total_mcqs": total_mcqs,
+                    "p_meta": json.dumps(phase_json),   # 🆕 cache full MCQ JSON
+                    "p_is_completed": False
+                }).execute()
+                logging.info(f"📍 Local tracker initialized for mcq → total_mcqs={total_mcqs} | meta cached ✅")
+                logging.debug(f"🧩 Stored meta preview → {json.dumps(phase_json)[:200]}...")
+
 
             # Step 3️⃣ Update pointer
             react_order = phase.get("react_order")
@@ -199,10 +215,10 @@ async def mentor_router(req: Request):
         elif intent == "next":
             try:
                 # 1️⃣ Get current pointer and phase
-                pointer_res = supabase.rpc("get_pointer_status", {
+                pointer_res = safe_rpc("get_pointer_status", {
                     "p_student_id": user_id,
                     "p_chapter_id": chapter_id
-                }).execute()
+                })
     
                 if not pointer_res.data:
                     return {"error": "No pointer found"}
@@ -366,5 +382,6 @@ async def mentor_router(req: Request):
     else:
         logging.warning(f"⚠️ Unknown intent received: {intent}")
         return {"error": "Unknown intent"}
+
 
 
