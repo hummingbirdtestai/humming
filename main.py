@@ -82,18 +82,36 @@ async def mentor_router(req: Request):
             react_order = pointer_res.data[0]["react_order"] if pointer_res.data else None
             is_completed = pointer_res.data[0]["is_completed"] if pointer_res.data else None
 
-            # Step 2️⃣ Get current phase content
+            # Step 2️⃣ Get current phase content — but use cached tracker meta if available
             phase_res = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": react_order,
                 "p_is_completed": is_completed
             }).execute()
             logging.info(f"📚 get_phase_content → {len(phase_res.data)} rows")
-
+            
             if not phase_res.data:
                 return {"error": "No phase content found"}
-
+            
             phase = phase_res.data[0]
+            
+            # 🧠 If the phase is conversation or mcq, try to resume from local tracker meta
+            phase_type = phase.get("phase_type")
+            if phase_type in ("conversation", "mcq"):
+                tracker_res = supabase.rpc("get_local_tracker_status", {
+                    "p_student_id": user_id,
+                    "p_phase_id": phase.get("phase_id")
+                }).execute()
+            
+                if tracker_res.data:
+                    tracker_row = tracker_res.data[0]
+                    cached_meta = tracker_row.get("meta")
+                    if cached_meta and cached_meta != {}:
+                        logging.info(f"⚡ Using cached meta for {phase_type} phase_id={phase.get('phase_id')}")
+                        phase["phase_content"] = cached_meta  # 🆕 override JSON from tracker
+                    else:
+                        logging.info(f"ℹ️ No cached meta found for {phase_type}, using DB content.")
+
 
             # ──────────────────────────────────────────────
             # 🧩 Step 2.5 → Phase recognition + local tracker logic
@@ -348,4 +366,5 @@ async def mentor_router(req: Request):
     else:
         logging.warning(f"⚠️ Unknown intent received: {intent}")
         return {"error": "Unknown intent"}
+
 
