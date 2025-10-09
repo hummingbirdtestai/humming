@@ -175,35 +175,103 @@ async def mentor_router(req: Request):
             logging.error(f"❌ Error in start/resume flow: {e}")
             return {"error": str(e)}
 
-    # ──────────────────────────────────────────────
-    # 🟣 NEXT PHASE FLOW
-    # ──────────────────────────────────────────────
-    elif intent == "next":
-        try:
-            pointer_res = supabase.rpc("get_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id
-            }).execute()
-
-            if not pointer_res.data:
-                return {"error": "No pointer found"}
-
-            react_order = pointer_res.data[0]["react_order"]
-
-            # 1️⃣ Mark complete
-            supabase.rpc("complete_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id,
-                "p_react_order": react_order
-            }).execute()
-            logging.info(f"✅ complete_pointer_status → {react_order}")
-
-            # 2️⃣ Fetch next
-            phase_res = supabase.rpc("get_phase_content", {
-                "p_chapter_id": chapter_id,
-                "p_react_order": react_order,
-                "p_is_completed": True
-            }).execute()
+        # ──────────────────────────────────────────────
+        # 🟣 NEXT PHASE FLOW — Tracker vs Pointer Branch
+        # ──────────────────────────────────────────────
+        elif intent == "next":
+            try:
+                # 1️⃣ Get current pointer and phase
+                pointer_res = supabase.rpc("get_pointer_status", {
+                    "p_student_id": user_id,
+                    "p_chapter_id": chapter_id
+                }).execute()
+    
+                if not pointer_res.data:
+                    return {"error": "No pointer found"}
+    
+                react_order = pointer_res.data[0]["react_order"]
+    
+                phase_res = supabase.rpc("get_phase_content", {
+                    "p_chapter_id": chapter_id,
+                    "p_react_order": react_order,
+                    "p_is_completed": False
+                }).execute()
+    
+                if not phase_res.data:
+                    return {"error": "No current phase found"}
+    
+                phase = phase_res.data[0]
+                phase_type = phase.get("phase_type")
+                phase_id = phase.get("phase_id")
+    
+                # 2️⃣ Phase branching logic
+                if phase_type in ("concept", "media", "flashcard"):
+                    # Simple phase — complete macro pointer directly
+                    supabase.rpc("complete_pointer_status", {
+                        "p_student_id": user_id,
+                        "p_chapter_id": chapter_id,
+                        "p_react_order": react_order
+                    }).execute()
+                    logging.info(f"✅ Macro pointer completed for {phase_type}")
+    
+                elif phase_type in ("conversation", "mcq"):
+                    # Tracker-based phase — advance local GPS pin
+                    supabase.rpc("update_local_tracker_status", {
+                        "p_student_id": user_id,
+                        "p_phase_id": phase_id,
+                        "p_chapter_id": chapter_id,
+                        "p_phase_type": phase_type,
+                        "p_is_completed": False
+                    }).execute()
+                    logging.info(f"📍 Local tracker updated for {phase_type}")
+    
+                    # Check if tracker completed → then mark macro complete
+                    tracker_check = supabase.rpc("get_local_tracker_status", {
+                        "p_student_id": user_id,
+                        "p_phase_id": phase_id
+                    }).execute()
+    
+                    tracker = tracker_check.data[0] if tracker_check.data else None
+                    if tracker and tracker.get("is_completed"):
+                        logging.info(f"🏁 Local tracker completed → promoting to macro pointer")
+                        supabase.rpc("complete_pointer_status", {
+                            "p_student_id": user_id,
+                            "p_chapter_id": chapter_id,
+                            "p_react_order": react_order
+                        }).execute()
+    
+                # 3️⃣ Now fetch next phase
+                next_phase = supabase.rpc("get_phase_content", {
+                    "p_chapter_id": chapter_id,
+                    "p_react_order": react_order,
+                    "p_is_completed": True
+                }).execute()
+    
+                if not next_phase.data:
+                    return {"message": "🎉 Chapter completed!"}
+    
+                next = next_phase.data[0]
+                next_type = next.get("phase_type", "concept")
+    
+                # 4️⃣ Prepare payload for next phase
+                data_block = { **(next.get("phase_content") or {}), "phase_id": next.get("phase_id") }
+                if next_type == "concept":
+                    data_block["current"] = next.get("current")
+                    data_block["total"] = next.get("total")
+    
+                payload = {
+                    "type": next_type,
+                    "data": data_block,
+                    "messages": [
+                        {"sender": "ai", "type": "text", "content": f"Next {next_type}"}
+                    ],
+                }
+    
+                return payload
+    
+            except Exception as e:
+                logging.error(f"❌ Error in next flow: {e}")
+                return {"error": str(e)}
 
             if not phase_res.data:
                 return {"error": "No next phase found"}
@@ -280,5 +348,6 @@ async def mentor_router(req: Request):
     else:
         logging.warning(f"⚠️ Unknown intent received: {intent}")
         return {"error": "Unknown intent"}
+
 
 
