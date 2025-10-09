@@ -104,37 +104,37 @@ async def mentor_router(req: Request):
             logging.info(f"🧩 Recognized phase_type={phase_type}")
             
             # Compute totals for in-phase arrays
-            if phase_type == "conversation":
-                total_hyfs = len(phase_json.get("HYFs", []))
-                supabase.rpc("update_local_tracker_status", {
-                    "p_student_id": user_id,
-                    "p_phase_id": phase.get("phase_id"),
-                    "p_chapter_id": chapter_id,
-                    "p_phase_type": phase_type,
-                    "p_tracker_type": "conversation",
-                    "p_current_hyf_index": 0,
-                    "p_total_hyfs": total_hyfs,
-                    "p_is_completed": False
-                }).execute()
-                logging.info(f"📍 Local tracker initialized for conversation → total_hyfs={total_hyfs}")
+           if phase_type == "conversation":
+            total_hyfs = len(phase_json.get("HYFs", []))
+            supabase.rpc("update_local_tracker_status", {
+                "p_student_id": user_id,
+                "p_phase_id": phase.get("phase_id"),
+                "p_chapter_id": chapter_id,
+                "p_phase_type": phase_type,
+                "p_tracker_type": "conversation",
+                "p_current_hyf_index": 0,
+                "p_total_hyfs": total_hyfs,
+                "p_meta": json.dumps(phase_json),   # 🆕 cache full HYFs JSON
+                "p_is_completed": False
+            }).execute()
+            logging.info(f"📍 Local tracker initialized for conversation → total_hyfs={total_hyfs} | meta cached ✅")
+            logging.debug(f"🧩 Stored meta preview → {json.dumps(phase_json)[:200]}...")
             
             elif phase_type == "mcq":
-                total_mcqs = len(phase_json if isinstance(phase_json, list) else [])
-                supabase.rpc("update_local_tracker_status", {
-                    "p_student_id": user_id,
-                    "p_phase_id": phase.get("phase_id"),
-                    "p_chapter_id": chapter_id,
-                    "p_phase_type": phase_type,
-                    "p_tracker_type": "concept_mcq",
-                    "p_current_mcq_index": 0,
-                    "p_total_mcqs": total_mcqs,
-                    "p_is_completed": False
-                }).execute()
-                logging.info(f"📍 Local tracker initialized for mcq → total_mcqs={total_mcqs}")
-            
-            else:
-                logging.info(f"ℹ️ Phase '{phase_type}' needs no tracker (concept/media/flashcard).")
-
+            total_mcqs = len(phase_json if isinstance(phase_json, list) else [])
+            supabase.rpc("update_local_tracker_status", {
+                "p_student_id": user_id,
+                "p_phase_id": phase.get("phase_id"),
+                "p_chapter_id": chapter_id,
+                "p_phase_type": phase_type,
+                "p_tracker_type": "concept_mcq",
+                "p_current_mcq_index": 0,
+                "p_total_mcqs": total_mcqs,
+                "p_meta": json.dumps(phase_json),   # 🆕 cache full MCQ JSON
+                "p_is_completed": False
+            }).execute()
+            logging.info(f"📍 Local tracker initialized for mcq → total_mcqs={total_mcqs} | meta cached ✅")
+            logging.debug(f"🧩 Stored meta preview → {json.dumps(phase_json)[:200]}...")
 
             # Step 3️⃣ Update pointer
             react_order = phase.get("react_order")
@@ -348,6 +348,4 @@ async def mentor_router(req: Request):
     else:
         logging.warning(f"⚠️ Unknown intent received: {intent}")
         return {"error": "Unknown intent"}
-
-
 
