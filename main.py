@@ -95,7 +95,6 @@ async def mentor_router(req: Request):
     # ──────────────────────────────────────────────
     if intent in ("start", "resume", "get_phase"):
         try:
-            # (unchanged start/resume logic)
             pointer_res = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
@@ -190,7 +189,7 @@ async def mentor_router(req: Request):
             return {"error": str(e)}
 
     # ──────────────────────────────────────────────
-    # 🟣 NEXT PHASE FLOW (✅ UPDATED)
+    # 🟣 NEXT PHASE FLOW (✅ CLEAN RPC VERSION)
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
@@ -244,32 +243,13 @@ async def mentor_router(req: Request):
                     }).execute()
                     logging.info(f"🏁 Local tracker promoted to macro pointer")
 
-            # 🚀 Fetch the next higher react_order dynamically
-            next_react_order = None
-            try:
-                res = supabase.table("concept_phases") \
-                    .select("react_order") \
-                    .eq("chapter_id", chapter_id) \
-                    .gt("react_order", react_order) \
-                    .order("react_order", ascending=True) \
-                    .limit(1) \
-                    .execute()
-                if res.data and len(res.data) > 0:
-                    next_react_order = res.data[0]["react_order"]
-            except Exception as e:
-                logging.error(f"⚠️ Failed to find next react_order: {e}")
-
-            if not next_react_order:
-                return {"message": "🎉 Chapter completed!"}
-
-            logging.info(f"➡️ Moving from react_order={react_order} to next={next_react_order}")
-
-            # Fetch next phase
+            # 🧭 Let RPC decide the next phase automatically
             next_phase = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
-                "p_react_order": next_react_order,
-                "p_is_completed": False
+                "p_react_order": react_order,
+                "p_is_completed": True
             }).execute()
+
             if not next_phase.data:
                 return {"message": "🎉 Chapter completed!"}
 
