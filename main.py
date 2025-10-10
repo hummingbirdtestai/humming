@@ -40,20 +40,24 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 client = OpenAI(api_key=OPENAI_KEY)
 
 # ──────────────────────────────────────────────
-# 🪶 FAULT-TOLERANT SUPABASE WRAPPER
+# 🪶 FAULT-TOLERANT SUPABASE WRAPPER (✅ FIXED)
 # ──────────────────────────────────────────────
 def safe_rpc(name: str, payload: dict):
     """Execute Supabase RPC safely with logging and None fallback."""
     try:
         res = supabase.rpc(name, payload).execute()
+
         if not hasattr(res, "data"):
             logging.error(f"❌ RPC {name} returned unexpected response type: {type(res)}")
             return None
+
         if res.data is None:
             logging.warning(f"⚠️ RPC {name} returned no data.")
             return None
+
         logging.info(f"✅ RPC {name} executed successfully.")
         return res
+
     except Exception as e:
         logging.error(f"⚠️ RPC {name} threw exception: {e}")
         return None
@@ -184,11 +188,11 @@ async def mentor_router(req: Request):
             return {"error": str(e)}
 
     # ──────────────────────────────────────────────
-    # 🟣 NEXT PHASE FLOW (✅ CORRECTED ORDER)
+    # 🟣 NEXT PHASE FLOW (🧠 FIXED FRONTEND BEHAVIOR)
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
-            # 1️⃣ Identify the current open pointer
+            # 1️⃣ Get current pointer
             pointer_res = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
@@ -197,24 +201,29 @@ async def mentor_router(req: Request):
                 return {"error": "No pointer found"}
 
             current_react_order = pointer_res.data[0]["react_order"]
+            current_is_completed = pointer_res.data[0]["is_completed"]
 
-            # 2️⃣ Mark current phase complete FIRST
+            # 2️⃣ Get current phase
+            phase_res = supabase.rpc("get_phase_content", {
+                "p_chapter_id": chapter_id,
+                "p_react_order": current_react_order,
+                "p_is_completed": current_is_completed
+            }).execute()
+            if not phase_res.data:
+                return {"error": "No current phase found"}
+
+            current_phase = phase_res.data[0]
+            current_phase_type = current_phase.get("phase_type")
+
+            # 3️⃣ Mark current phase complete
             supabase.rpc("complete_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
                 "p_react_order": current_react_order
             }).execute()
-            logging.info(f"✅ Completed phase react_order={current_react_order}")
+            logging.info(f"✅ Completed {current_phase_type} (react_order={current_react_order})")
 
-            # 3️⃣ Fetch pointer again (reflects completed state)
-            updated_pointer = safe_rpc("get_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id
-            })
-            if not updated_pointer or not updated_pointer.data:
-                return {"error": "No updated pointer after completion"}
-
-            # 4️⃣ Get next phase content
+            # 4️⃣ Fetch next phase
             next_phase_res = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": current_react_order,
@@ -227,34 +236,15 @@ async def mentor_router(req: Request):
             next_react_order = next_phase.get("react_order")
             next_type = next_phase.get("phase_type")
 
-            # 5️⃣ Start new pointer cleanly
+            # 🆕 5️⃣ Now call update_pointer_status with only new react_order
             supabase.rpc("update_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
                 "p_react_order": next_react_order
             }).execute()
-            logging.info(f"🕒 Started new pointer react_order={next_react_order}")
+            logging.info(f"🕒 update_pointer_status (next phase) → {next_react_order}")
 
-            # 6️⃣ If next phase needs tracker
-            if next_type in ("conversation", "mcq"):
-                phase_json = next_phase.get("phase_content") or {}
-                total_hyfs = len(phase_json.get("HYFs", [])) if next_type == "conversation" else 0
-                total_mcqs = len(phase_json if isinstance(phase_json, list) else []) if next_type == "mcq" else 0
-
-                supabase.rpc("update_local_tracker_status", {
-                    "p_student_id": user_id,
-                    "p_phase_id": next_phase.get("phase_id"),
-                    "p_chapter_id": chapter_id,
-                    "p_phase_type": next_type,
-                    "p_tracker_type": "conversation" if next_type == "conversation" else "concept_mcq",
-                    "p_total_hyfs": total_hyfs,
-                    "p_total_mcqs": total_mcqs,
-                    "p_meta": json.dumps(phase_json),
-                    "p_is_completed": False
-                }).execute()
-                logging.info(f"📊 Tracker created for {next_type} phase_id={next_phase.get('phase_id')}")
-
-            # 7️⃣ Return structured response
+            # 6️⃣ Construct response
             data_block = {**(next_phase.get("phase_content") or {}), "phase_id": next_phase.get("phase_id")}
             if next_type == "concept":
                 data_block["current"] = next_phase.get("current")
