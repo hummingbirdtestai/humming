@@ -47,7 +47,6 @@ def safe_rpc(name: str, payload: dict):
     try:
         res = supabase.rpc(name, payload).execute()
 
-        # ✅ Correct handling for supabase-py SDK (no .error attribute)
         if not hasattr(res, "data"):
             logging.error(f"❌ RPC {name} returned unexpected response type: {type(res)}")
             return None
@@ -218,15 +217,21 @@ async def mentor_router(req: Request):
             phase_type = phase.get("phase_type")
             phase_id = phase.get("phase_id")
 
-            # 3️⃣ Mark the current phase as completed
-            supabase.rpc("complete_pointer_status", {
+            # 3️⃣ Mark the current phase as completed — block until confirmed
+            complete_res = supabase.rpc("complete_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
                 "p_react_order": react_order
             }).execute()
-            logging.info(f"✅ Completed pointer for {phase_type} (react_order={react_order})")
 
-            # 4️⃣ Re-fetch the pointer after completion
+            # ✅ Wait for completion acknowledgment before moving forward
+            if hasattr(complete_res, "status_code") and complete_res.status_code not in (200, 204):
+                logging.error(f"❌ complete_pointer_status failed → {complete_res}")
+                return {"error": "Failed to mark phase complete"}
+
+            logging.info(f"✅ Completion acknowledged for {phase_type} (react_order={react_order})")
+
+            # 4️⃣ Re-fetch the pointer after confirmed completion
             new_pointer = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
