@@ -192,7 +192,6 @@ async def mentor_router(req: Request):
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
-            # 1️⃣ Get current pointer
             pointer_res = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
@@ -203,7 +202,6 @@ async def mentor_router(req: Request):
             react_order = pointer_res.data[0]["react_order"]
             is_completed = pointer_res.data[0]["is_completed"]
 
-            # 2️⃣ Get current phase content
             phase_res = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": react_order,
@@ -217,21 +215,18 @@ async def mentor_router(req: Request):
             phase_type = phase.get("phase_type")
             phase_id = phase.get("phase_id")
 
-            # 3️⃣ Mark the current phase as completed — block until confirmed
             complete_res = supabase.rpc("complete_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
                 "p_react_order": react_order
             }).execute()
 
-            # ✅ Wait for completion acknowledgment before moving forward
             if hasattr(complete_res, "status_code") and complete_res.status_code not in (200, 204):
                 logging.error(f"❌ complete_pointer_status failed → {complete_res}")
                 return {"error": "Failed to mark phase complete"}
 
             logging.info(f"✅ Completion acknowledged for {phase_type} (react_order={react_order})")
 
-            # 4️⃣ Re-fetch the pointer after confirmed completion
             new_pointer = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
@@ -243,7 +238,6 @@ async def mentor_router(req: Request):
             new_react_order = new_pointer.data[0]["react_order"]
             new_is_completed = new_pointer.data[0]["is_completed"]
 
-            # 5️⃣ Get the next phase based on updated pointer
             next_phase = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": new_react_order,
@@ -255,6 +249,14 @@ async def mentor_router(req: Request):
 
             next = next_phase.data[0]
             next_type = next.get("phase_type", "concept")
+
+            # 🆕 Fire update_pointer_status for the new phase
+            supabase.rpc("update_pointer_status", {
+                "p_student_id": user_id,
+                "p_chapter_id": chapter_id,
+                "p_react_order": next.get("react_order")
+            }).execute()
+            logging.info(f"🕒 update_pointer_status (next phase) → {next.get('react_order')}")
 
             data_block = {**(next.get("phase_content") or {}), "phase_id": next.get("phase_id")}
             if next_type == "concept":
