@@ -188,10 +188,11 @@ async def mentor_router(req: Request):
             return {"error": str(e)}
 
     # ──────────────────────────────────────────────
-    # 🟣 NEXT PHASE FLOW (🔥 FIXED TRUE FLOW)
+    # 🟣 NEXT PHASE FLOW (🧠 FIXED FRONTEND BEHAVIOR)
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
+            # 1️⃣ Get current pointer
             pointer_res = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
@@ -199,69 +200,55 @@ async def mentor_router(req: Request):
             if not pointer_res or not pointer_res.data:
                 return {"error": "No pointer found"}
 
-            react_order = pointer_res.data[0]["react_order"]
-            is_completed = pointer_res.data[0]["is_completed"]
+            current_react_order = pointer_res.data[0]["react_order"]
+            current_is_completed = pointer_res.data[0]["is_completed"]
 
+            # 2️⃣ Get current phase
             phase_res = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
-                "p_react_order": react_order,
-                "p_is_completed": is_completed
+                "p_react_order": current_react_order,
+                "p_is_completed": current_is_completed
             }).execute()
-
             if not phase_res.data:
                 return {"error": "No current phase found"}
 
-            phase = phase_res.data[0]
-            phase_type = phase.get("phase_type")
-            phase_id = phase.get("phase_id")
+            current_phase = phase_res.data[0]
+            current_phase_type = current_phase.get("phase_type")
 
-            complete_res = supabase.rpc("complete_pointer_status", {
+            # 3️⃣ Mark current phase complete
+            supabase.rpc("complete_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
-                "p_react_order": react_order
+                "p_react_order": current_react_order
             }).execute()
+            logging.info(f"✅ Completed {current_phase_type} (react_order={current_react_order})")
 
-            if hasattr(complete_res, "status_code") and complete_res.status_code not in (200, 204):
-                logging.error(f"❌ complete_pointer_status failed → {complete_res}")
-                return {"error": "Failed to mark phase complete"}
-
-            logging.info(f"✅ Completion acknowledged for {phase_type} (react_order={react_order})")
-
-            new_pointer = safe_rpc("get_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id
-            })
-
-            if not new_pointer or not new_pointer.data:
-                return {"message": "🎉 Chapter completed!"}
-
-            new_react_order = new_pointer.data[0]["react_order"]
-            new_is_completed = new_pointer.data[0]["is_completed"]
-
-            next_phase = supabase.rpc("get_phase_content", {
+            # 4️⃣ Fetch next phase
+            next_phase_res = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
-                "p_react_order": new_react_order,
-                "p_is_completed": new_is_completed
+                "p_react_order": current_react_order,
+                "p_is_completed": True
             }).execute()
-
-            if not next_phase.data:
+            if not next_phase_res.data:
                 return {"message": "🎉 Chapter completed!"}
 
-            next = next_phase.data[0]
-            next_type = next.get("phase_type", "concept")
+            next_phase = next_phase_res.data[0]
+            next_react_order = next_phase.get("react_order")
+            next_type = next_phase.get("phase_type")
 
-            # 🆕 Fire update_pointer_status for the new phase
+            # 🆕 5️⃣ Now call update_pointer_status with only new react_order
             supabase.rpc("update_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
-                "p_react_order": next.get("react_order")
+                "p_react_order": next_react_order
             }).execute()
-            logging.info(f"🕒 update_pointer_status (next phase) → {next.get('react_order')}")
+            logging.info(f"🕒 update_pointer_status (next phase) → {next_react_order}")
 
-            data_block = {**(next.get("phase_content") or {}), "phase_id": next.get("phase_id")}
+            # 6️⃣ Construct response
+            data_block = {**(next_phase.get("phase_content") or {}), "phase_id": next_phase.get("phase_id")}
             if next_type == "concept":
-                data_block["current"] = next.get("current")
-                data_block["total"] = next.get("total")
+                data_block["current"] = next_phase.get("current")
+                data_block["total"] = next_phase.get("total")
 
             return {
                 "type": next_type,
