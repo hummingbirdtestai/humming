@@ -189,24 +189,28 @@ async def mentor_router(req: Request):
             return {"error": str(e)}
 
     # ──────────────────────────────────────────────
-    # 🟣 NEXT PHASE FLOW (✅ CLEAN RPC VERSION)
+    # 🟣 NEXT PHASE FLOW (🔥 FIXED TRUE FLOW)
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
+            # 1️⃣ Get current pointer
             pointer_res = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
             })
-            if not pointer_res.data:
+            if not pointer_res or not pointer_res.data:
                 return {"error": "No pointer found"}
 
             react_order = pointer_res.data[0]["react_order"]
+            is_completed = pointer_res.data[0]["is_completed"]
 
+            # 2️⃣ Get current phase content
             phase_res = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": react_order,
-                "p_is_completed": False
+                "p_is_completed": is_completed
             }).execute()
+
             if not phase_res.data:
                 return {"error": "No current phase found"}
 
@@ -214,40 +218,31 @@ async def mentor_router(req: Request):
             phase_type = phase.get("phase_type")
             phase_id = phase.get("phase_id")
 
-            if phase_type in ("concept", "media", "flashcard"):
-                supabase.rpc("complete_pointer_status", {
-                    "p_student_id": user_id,
-                    "p_chapter_id": chapter_id,
-                    "p_react_order": react_order
-                }).execute()
-                logging.info(f"✅ Macro pointer completed for {phase_type}")
+            # 3️⃣ Mark the current phase as completed
+            supabase.rpc("complete_pointer_status", {
+                "p_student_id": user_id,
+                "p_chapter_id": chapter_id,
+                "p_react_order": react_order
+            }).execute()
+            logging.info(f"✅ Completed pointer for {phase_type} (react_order={react_order})")
 
-            elif phase_type in ("conversation", "mcq"):
-                supabase.rpc("update_local_tracker_status", {
-                    "p_student_id": user_id,
-                    "p_phase_id": phase_id,
-                    "p_chapter_id": chapter_id,
-                    "p_phase_type": phase_type,
-                    "p_is_completed": False
-                }).execute()
-                tracker_check = supabase.rpc("get_local_tracker_status", {
-                    "p_student_id": user_id,
-                    "p_phase_id": phase_id
-                }).execute()
-                tracker = tracker_check.data[0] if tracker_check.data else None
-                if tracker and tracker.get("is_completed"):
-                    supabase.rpc("complete_pointer_status", {
-                        "p_student_id": user_id,
-                        "p_chapter_id": chapter_id,
-                        "p_react_order": react_order
-                    }).execute()
-                    logging.info(f"🏁 Local tracker promoted to macro pointer")
+            # 4️⃣ Re-fetch the pointer after completion
+            new_pointer = safe_rpc("get_pointer_status", {
+                "p_student_id": user_id,
+                "p_chapter_id": chapter_id
+            })
 
-            # 🧭 Let RPC decide the next phase automatically
+            if not new_pointer or not new_pointer.data:
+                return {"message": "🎉 Chapter completed!"}
+
+            new_react_order = new_pointer.data[0]["react_order"]
+            new_is_completed = new_pointer.data[0]["is_completed"]
+
+            # 5️⃣ Get the next phase based on updated pointer
             next_phase = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
-                "p_react_order": react_order,
-                "p_is_completed": True
+                "p_react_order": new_react_order,
+                "p_is_completed": new_is_completed
             }).execute()
 
             if not next_phase.data:
