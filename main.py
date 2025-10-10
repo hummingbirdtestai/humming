@@ -95,7 +95,7 @@ async def mentor_router(req: Request):
     # ──────────────────────────────────────────────
     if intent in ("start", "resume", "get_phase"):
         try:
-            # Step 1️⃣ Get current pointer
+            # (unchanged start/resume logic)
             pointer_res = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
@@ -105,7 +105,6 @@ async def mentor_router(req: Request):
             react_order = pointer_res.data[0]["react_order"] if pointer_res.data else None
             is_completed = pointer_res.data[0]["is_completed"] if pointer_res.data else None
 
-            # Step 2️⃣ Get current phase content
             phase_res = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": react_order,
@@ -117,9 +116,8 @@ async def mentor_router(req: Request):
                 return {"error": "No phase content found"}
 
             phase = phase_res.data[0]
-
-            # Step 3️⃣ Use cached tracker meta if available
             phase_type = phase.get("phase_type")
+
             if phase_type in ("conversation", "mcq"):
                 tracker_res = supabase.rpc("get_local_tracker_status", {
                     "p_student_id": user_id,
@@ -134,7 +132,6 @@ async def mentor_router(req: Request):
                     else:
                         logging.info(f"ℹ️ No cached meta found for {phase_type}, using DB content.")
 
-            # Step 4️⃣ Phase recognition + local tracker logic
             phase_json = phase.get("phase_content") or {}
             logging.info(f"🧩 Recognized phase_type={phase_type}")
 
@@ -151,7 +148,6 @@ async def mentor_router(req: Request):
                     "p_meta": json.dumps(phase_json),
                     "p_is_completed": False
                 }).execute()
-                logging.info(f"📍 Local tracker initialized for conversation → total_hyfs={total_hyfs}")
 
             elif phase_type == "mcq":
                 total_mcqs = len(phase_json if isinstance(phase_json, list) else [])
@@ -166,9 +162,7 @@ async def mentor_router(req: Request):
                     "p_meta": json.dumps(phase_json),
                     "p_is_completed": False
                 }).execute()
-                logging.info(f"📍 Local tracker initialized for mcq → total_mcqs={total_mcqs}")
 
-            # Step 5️⃣ Update pointer
             react_order = phase.get("react_order")
             supabase.rpc("update_pointer_status", {
                 "p_student_id": user_id,
@@ -177,7 +171,6 @@ async def mentor_router(req: Request):
             }).execute()
             logging.info(f"🕒 update_pointer_status → {react_order}")
 
-            # Step 6️⃣ Prepare frontend payload
             phase_json = phase.get("phase_content") or {}
             data_block = {**phase_json, "phase_id": phase.get("phase_id")}
             if phase_type == "concept":
@@ -197,7 +190,7 @@ async def mentor_router(req: Request):
             return {"error": str(e)}
 
     # ──────────────────────────────────────────────
-    # 🟣 NEXT PHASE FLOW
+    # 🟣 NEXT PHASE FLOW (✅ UPDATED)
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
@@ -222,7 +215,6 @@ async def mentor_router(req: Request):
             phase_type = phase.get("phase_type")
             phase_id = phase.get("phase_id")
 
-            # Branching logic
             if phase_type in ("concept", "media", "flashcard"):
                 supabase.rpc("complete_pointer_status", {
                     "p_student_id": user_id,
@@ -252,11 +244,31 @@ async def mentor_router(req: Request):
                     }).execute()
                     logging.info(f"🏁 Local tracker promoted to macro pointer")
 
+            # 🚀 Fetch the next higher react_order dynamically
+            next_react_order = None
+            try:
+                res = supabase.table("concept_phases") \
+                    .select("react_order") \
+                    .eq("chapter_id", chapter_id) \
+                    .gt("react_order", react_order) \
+                    .order("react_order", ascending=True) \
+                    .limit(1) \
+                    .execute()
+                if res.data and len(res.data) > 0:
+                    next_react_order = res.data[0]["react_order"]
+            except Exception as e:
+                logging.error(f"⚠️ Failed to find next react_order: {e}")
+
+            if not next_react_order:
+                return {"message": "🎉 Chapter completed!"}
+
+            logging.info(f"➡️ Moving from react_order={react_order} to next={next_react_order}")
+
             # Fetch next phase
             next_phase = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
-                "p_react_order": react_order,
-                "p_is_completed": True
+                "p_react_order": next_react_order,
+                "p_is_completed": False
             }).execute()
             if not next_phase.data:
                 return {"message": "🎉 Chapter completed!"}
@@ -305,9 +317,6 @@ async def mentor_router(req: Request):
             logging.error(f"❌ GPT or Supabase error: {e}")
             return {"error": str(e)}
 
-    # ──────────────────────────────────────────────
-    # 🔴 UNKNOWN INTENT
-    # ──────────────────────────────────────────────
     else:
         logging.warning(f"⚠️ Unknown intent received: {intent}")
         return {"error": "Unknown intent"}
