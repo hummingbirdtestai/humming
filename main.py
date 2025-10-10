@@ -40,16 +40,25 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 client = OpenAI(api_key=OPENAI_KEY)
 
 # ──────────────────────────────────────────────
-# 🪶 FAULT-TOLERANT SUPABASE WRAPPER
+# 🪶 FAULT-TOLERANT SUPABASE WRAPPER (✅ FIXED)
 # ──────────────────────────────────────────────
 def safe_rpc(name: str, payload: dict):
     """Execute Supabase RPC safely with logging and None fallback."""
     try:
         res = supabase.rpc(name, payload).execute()
-        if res.error:
-            logging.error(f"❌ RPC {name} failed: {res.error}")
+
+        # ✅ Correct handling for supabase-py SDK (no .error attribute)
+        if not hasattr(res, "data"):
+            logging.error(f"❌ RPC {name} returned unexpected response type: {type(res)}")
             return None
+
+        if res.data is None:
+            logging.warning(f"⚠️ RPC {name} returned no data.")
+            return None
+
+        logging.info(f"✅ RPC {name} executed successfully.")
         return res
+
     except Exception as e:
         logging.error(f"⚠️ RPC {name} threw exception: {e}")
         return None
