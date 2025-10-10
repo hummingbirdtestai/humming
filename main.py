@@ -62,7 +62,6 @@ def root():
     logging.info("🩵 Root route called — health check OK.")
     return {"status": "Hummingbird FastAPI running 🐦", "ok": True}
 
-
 # ──────────────────────────────────────────────
 # 🧠 MAIN ROUTER
 # ──────────────────────────────────────────────
@@ -97,46 +96,39 @@ async def mentor_router(req: Request):
             react_order = pointer_res.data[0]["react_order"] if pointer_res.data else None
             is_completed = pointer_res.data[0]["is_completed"] if pointer_res.data else None
 
-            # Step 2️⃣ Get current phase content — but use cached tracker meta if available
+            # Step 2️⃣ Get current phase content
             phase_res = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": react_order,
                 "p_is_completed": is_completed
             }).execute()
             logging.info(f"📚 get_phase_content → {len(phase_res.data)} rows")
-            
+
             if not phase_res.data:
                 return {"error": "No phase content found"}
-            
+
             phase = phase_res.data[0]
-            
-            # 🧠 If the phase is conversation or mcq, try to resume from local tracker meta
+
+            # Step 3️⃣ Use cached tracker meta if available
             phase_type = phase.get("phase_type")
             if phase_type in ("conversation", "mcq"):
                 tracker_res = supabase.rpc("get_local_tracker_status", {
                     "p_student_id": user_id,
                     "p_phase_id": phase.get("phase_id")
                 }).execute()
-            
                 if tracker_res.data:
                     tracker_row = tracker_res.data[0]
                     cached_meta = tracker_row.get("meta")
                     if cached_meta and cached_meta != {}:
                         logging.info(f"⚡ Using cached meta for {phase_type} phase_id={phase.get('phase_id')}")
-                        phase["phase_content"] = cached_meta  # 🆕 override JSON from tracker
+                        phase["phase_content"] = cached_meta
                     else:
                         logging.info(f"ℹ️ No cached meta found for {phase_type}, using DB content.")
 
-
-            # ──────────────────────────────────────────────
-            # 🧩 Step 2.5 → Phase recognition + local tracker logic
-            # ──────────────────────────────────────────────
-            phase_type = phase.get("phase_type")
+            # Step 4️⃣ Phase recognition + local tracker logic
             phase_json = phase.get("phase_content") or {}
-            
             logging.info(f"🧩 Recognized phase_type={phase_type}")
-            
-            # Compute totals for in-phase arrays
+
             if phase_type == "conversation":
                 total_hyfs = len(phase_json.get("HYFs", []))
                 supabase.rpc("update_local_tracker_status", {
@@ -147,12 +139,11 @@ async def mentor_router(req: Request):
                     "p_tracker_type": "conversation",
                     "p_current_hyf_index": 0,
                     "p_total_hyfs": total_hyfs,
-                    "p_meta": json.dumps(phase_json),   # 🆕 cache full HYFs JSON
+                    "p_meta": json.dumps(phase_json),
                     "p_is_completed": False
                 }).execute()
-                logging.info(f"📍 Local tracker initialized for conversation → total_hyfs={total_hyfs} | meta cached ✅")
-                logging.debug(f"🧩 Stored meta preview → {json.dumps(phase_json)[:200]}...")
-            
+                logging.info(f"📍 Local tracker initialized for conversation → total_hyfs={total_hyfs}")
+
             elif phase_type == "mcq":
                 total_mcqs = len(phase_json if isinstance(phase_json, list) else [])
                 supabase.rpc("update_local_tracker_status", {
@@ -163,14 +154,12 @@ async def mentor_router(req: Request):
                     "p_tracker_type": "concept_mcq",
                     "p_current_mcq_index": 0,
                     "p_total_mcqs": total_mcqs,
-                    "p_meta": json.dumps(phase_json),   # 🆕 cache full MCQ JSON
+                    "p_meta": json.dumps(phase_json),
                     "p_is_completed": False
                 }).execute()
-                logging.info(f"📍 Local tracker initialized for mcq → total_mcqs={total_mcqs} | meta cached ✅")
-                logging.debug(f"🧩 Stored meta preview → {json.dumps(phase_json)[:200]}...")
+                logging.info(f"📍 Local tracker initialized for mcq → total_mcqs={total_mcqs}")
 
-
-            # Step 3️⃣ Update pointer
+            # Step 5️⃣ Update pointer
             react_order = phase.get("react_order")
             supabase.rpc("update_pointer_status", {
                 "p_student_id": user_id,
@@ -179,168 +168,105 @@ async def mentor_router(req: Request):
             }).execute()
             logging.info(f"🕒 update_pointer_status → {react_order}")
 
-            # Step 4️⃣ Prepare frontend-ready payload
-            phase_type = phase.get("phase_type", "concept")
+            # Step 6️⃣ Prepare frontend payload
             phase_json = phase.get("phase_content") or {}
-            
-            # Base data
-            data_block = { **phase_json, "phase_id": phase.get("phase_id") }
-            
-            # 🧠 Add current/total only for concept phase
+            data_block = {**phase_json, "phase_id": phase.get("phase_id")}
             if phase_type == "concept":
                 data_block["current"] = phase.get("current")
                 data_block["total"] = phase.get("total")
-            
-            payload = {
+
+            return {
                 "type": phase_type,
                 "data": data_block,
                 "messages": [
-                    {
-                        "sender": "ai",
-                        "type": "text",
-                        "content": f"Starting {phase_type}"
-                    }
+                    {"sender": "ai", "type": "text", "content": f"Starting {phase_type}"}
                 ],
             }
-
-            return payload
 
         except Exception as e:
             logging.error(f"❌ Error in start/resume flow: {e}")
             return {"error": str(e)}
 
-        # ──────────────────────────────────────────────
-        # 🟣 NEXT PHASE FLOW — Tracker vs Pointer Branch
-        # ──────────────────────────────────────────────
-        elif intent == "next":
-            try:
-                # 1️⃣ Get current pointer and phase
-                pointer_res = safe_rpc("get_pointer_status", {
+    # ──────────────────────────────────────────────
+    # 🟣 NEXT PHASE FLOW
+    # ──────────────────────────────────────────────
+    elif intent == "next":
+        try:
+            pointer_res = safe_rpc("get_pointer_status", {
+                "p_student_id": user_id,
+                "p_chapter_id": chapter_id
+            })
+            if not pointer_res.data:
+                return {"error": "No pointer found"}
+
+            react_order = pointer_res.data[0]["react_order"]
+
+            phase_res = supabase.rpc("get_phase_content", {
+                "p_chapter_id": chapter_id,
+                "p_react_order": react_order,
+                "p_is_completed": False
+            }).execute()
+            if not phase_res.data:
+                return {"error": "No current phase found"}
+
+            phase = phase_res.data[0]
+            phase_type = phase.get("phase_type")
+            phase_id = phase.get("phase_id")
+
+            # Branching logic
+            if phase_type in ("concept", "media", "flashcard"):
+                supabase.rpc("complete_pointer_status", {
                     "p_student_id": user_id,
-                    "p_chapter_id": chapter_id
-                })
-    
-                if not pointer_res.data:
-                    return {"error": "No pointer found"}
-    
-                react_order = pointer_res.data[0]["react_order"]
-    
-                phase_res = supabase.rpc("get_phase_content", {
                     "p_chapter_id": chapter_id,
-                    "p_react_order": react_order,
+                    "p_react_order": react_order
+                }).execute()
+                logging.info(f"✅ Macro pointer completed for {phase_type}")
+
+            elif phase_type in ("conversation", "mcq"):
+                supabase.rpc("update_local_tracker_status", {
+                    "p_student_id": user_id,
+                    "p_phase_id": phase_id,
+                    "p_chapter_id": chapter_id,
+                    "p_phase_type": phase_type,
                     "p_is_completed": False
                 }).execute()
-    
-                if not phase_res.data:
-                    return {"error": "No current phase found"}
-    
-                phase = phase_res.data[0]
-                phase_type = phase.get("phase_type")
-                phase_id = phase.get("phase_id")
-    
-                # 2️⃣ Phase branching logic
-                if phase_type in ("concept", "media", "flashcard"):
-                    # Simple phase — complete macro pointer directly
+                tracker_check = supabase.rpc("get_local_tracker_status", {
+                    "p_student_id": user_id,
+                    "p_phase_id": phase_id
+                }).execute()
+                tracker = tracker_check.data[0] if tracker_check.data else None
+                if tracker and tracker.get("is_completed"):
                     supabase.rpc("complete_pointer_status", {
                         "p_student_id": user_id,
                         "p_chapter_id": chapter_id,
                         "p_react_order": react_order
                     }).execute()
-                    logging.info(f"✅ Macro pointer completed for {phase_type}")
-    
-                elif phase_type in ("conversation", "mcq"):
-                    # Tracker-based phase — advance local GPS pin
-                    supabase.rpc("update_local_tracker_status", {
-                        "p_student_id": user_id,
-                        "p_phase_id": phase_id,
-                        "p_chapter_id": chapter_id,
-                        "p_phase_type": phase_type,
-                        "p_is_completed": False
-                    }).execute()
-                    logging.info(f"📍 Local tracker updated for {phase_type}")
-    
-                    # Check if tracker completed → then mark macro complete
-                    tracker_check = supabase.rpc("get_local_tracker_status", {
-                        "p_student_id": user_id,
-                        "p_phase_id": phase_id
-                    }).execute()
-    
-                    tracker = tracker_check.data[0] if tracker_check.data else None
-                    if tracker and tracker.get("is_completed"):
-                        logging.info(f"🏁 Local tracker completed → promoting to macro pointer")
-                        supabase.rpc("complete_pointer_status", {
-                            "p_student_id": user_id,
-                            "p_chapter_id": chapter_id,
-                            "p_react_order": react_order
-                        }).execute()
-    
-                # 3️⃣ Now fetch next phase
-                next_phase = supabase.rpc("get_phase_content", {
-                    "p_chapter_id": chapter_id,
-                    "p_react_order": react_order,
-                    "p_is_completed": True
-                }).execute()
-    
-                if not next_phase.data:
-                    return {"message": "🎉 Chapter completed!"}
-    
-                next = next_phase.data[0]
-                next_type = next.get("phase_type", "concept")
-    
-                # 4️⃣ Prepare payload for next phase
-                data_block = { **(next.get("phase_content") or {}), "phase_id": next.get("phase_id") }
-                if next_type == "concept":
-                    data_block["current"] = next.get("current")
-                    data_block["total"] = next.get("total")
-    
-                payload = {
-                    "type": next_type,
-                    "data": data_block,
-                    "messages": [
-                        {"sender": "ai", "type": "text", "content": f"Next {next_type}"}
-                    ],
-                }
-    
-                return payload
-    
-            except Exception as e:
-                logging.error(f"❌ Error in next flow: {e}")
-                return {"error": str(e)}
+                    logging.info(f"🏁 Local tracker promoted to macro pointer")
 
-            if not phase_res.data:
-                return {"error": "No next phase found"}
-
-            phase = phase_res.data[0]
-
-            # 3️⃣ Update pointer to next
-            next_react_order = phase.get("react_order")
-            supabase.rpc("update_pointer_status", {
-                "p_student_id": user_id,
+            # Fetch next phase
+            next_phase = supabase.rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
-                "p_react_order": next_react_order
+                "p_react_order": react_order,
+                "p_is_completed": True
             }).execute()
-            logging.info(f"🕒 update_pointer_status(next) → {next_react_order}")
+            if not next_phase.data:
+                return {"message": "🎉 Chapter completed!"}
 
-            # 4️⃣ Return in AdaptiveChat structure
-            payload = {
-                "type": phase.get("phase_type", "concept"),
-                "data": {
-                    **(phase.get("phase_content") or {}),
-                    "phase_id": phase.get("phase_id"),
-                    "current": phase.get("current"),
-                    "total": phase.get("total")
-                },
+            next = next_phase.data[0]
+            next_type = next.get("phase_type", "concept")
+
+            data_block = {**(next.get("phase_content") or {}), "phase_id": next.get("phase_id")}
+            if next_type == "concept":
+                data_block["current"] = next.get("current")
+                data_block["total"] = next.get("total")
+
+            return {
+                "type": next_type,
+                "data": data_block,
                 "messages": [
-                    {
-                        "sender": "ai",
-                        "type": "text",
-                        "content": f"Next {phase.get('phase_type', 'concept')} "
-                                   f"({phase.get('current')}/{phase.get('total')})"
-                    }
+                    {"sender": "ai", "type": "text", "content": f"Next {next_type}"}
                 ],
             }
-
-            return payload
 
         except Exception as e:
             logging.error(f"❌ Error in next flow: {e}")
@@ -354,24 +280,18 @@ async def mentor_router(req: Request):
         if not q:
             return {"error": "No question provided"}
         try:
-            logging.info(f"💬 GPT query: {q}")
             ans = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": q}]
             )
             reply = ans.choices[0].message.content
-            logging.info(f"🤖 GPT reply: {reply[:120]}...")
-
-            # Optional: store in Supabase (student_doubts)
             supabase.table("student_doubts").insert({
                 "user_id": user_id,
                 "chapter_id": chapter_id,
                 "question": q,
                 "answer": reply
             }).execute()
-
             return {"reply": reply}
-
         except Exception as e:
             logging.error(f"❌ GPT or Supabase error: {e}")
             return {"error": str(e)}
@@ -382,6 +302,3 @@ async def mentor_router(req: Request):
     else:
         logging.warning(f"⚠️ Unknown intent received: {intent}")
         return {"error": "Unknown intent"}
-
-
-
