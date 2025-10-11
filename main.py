@@ -1,6 +1,6 @@
 # main.py
 # ──────────────────────────────────────────────
-# 🐦 Hummingbird FastAPI — clean final version (with phase_type normalization)
+# 🐦 Hummingbird FastAPI — Final Version (with direct MCQ UPSERT + Mentor API)
 # ──────────────────────────────────────────────
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +22,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
 if not all([SUPABASE_URL, SUPABASE_KEY, OPENAI_KEY]):
-    logging.warning("⚠️ Missing environment variables!")
+    logging.warning("⚠️ Missing one or more environment variables!")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_KEY)
@@ -63,7 +63,42 @@ def root():
     return {"status": "Hummingbird FastAPI running 🐦", "ok": True}
 
 # ──────────────────────────────────────────────
-# 🧠 Mentor API Router
+# 🧩 Submit MCQ Answer — Direct UPSERT into Supabase
+# ──────────────────────────────────────────────
+@app.post("/submit_mcq_answer")
+async def submit_mcq_answer(request: Request):
+    """Receives MCQ attempt from frontend and UPSERTS into student_mcq_attempts."""
+    try:
+        data = await request.json()
+        logging.info(f"🧾 MCQ Attempt Payload → {data}")
+
+        response = supabase.table("student_mcq_attempts").upsert({
+            "student_id": data.get("p_student_id"),
+            "subject_id": data.get("p_subject_id"),
+            "chapter_id": data.get("p_chapter_id"),
+            "topic_id": data.get("p_topic_id"),
+            "vertical_id": data.get("p_vertical_id"),
+            "phase_id": data.get("p_phase_id"),
+            "react_order": data.get("p_react_order"),
+            "mcq_uuid": data.get("p_mcq_uuid"),
+            "mcq_key": data.get("p_mcq_key"),
+            "selected_option": data.get("p_selected_option"),
+            "correct_answer": data.get("p_correct_answer"),
+            "is_correct": data.get("p_is_correct"),
+            "learning_gap": data.get("p_learning_gap"),
+            "mcq_category": data.get("p_mcq_category", "concept"),
+            "hyf_uuid": data.get("p_hyf_uuid"),
+        }).execute()
+
+        logging.info("✅ MCQ upserted successfully in student_mcq_attempts.")
+        return {"status": "success", "details": response.data}
+
+    except Exception as e:
+        logging.error(f"❌ Error in /submit_mcq_answer: {e}")
+        return {"status": "error", "message": str(e)}
+
+# ──────────────────────────────────────────────
+# 🧠 Mentor API Router (AdaptiveChat Flow)
 # ──────────────────────────────────────────────
 @app.post("/mentor_api")
 async def mentor_router(req: Request):
@@ -86,7 +121,6 @@ async def mentor_router(req: Request):
     # ──────────────────────────────────────────────
     if intent in ("start", "resume"):
         try:
-            # 1️⃣ Get pointer status
             pointer = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
@@ -94,7 +128,6 @@ async def mentor_router(req: Request):
             react_order = pointer.data[0]["react_order"] if pointer and pointer.data else None
             is_completed = pointer.data[0]["is_completed"] if pointer and pointer.data else None
 
-            # 2️⃣ Get current or first phase
             phase_res = safe_rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": react_order,
@@ -107,7 +140,7 @@ async def mentor_router(req: Request):
             phase = phase_res.data[0]
             phase_type = phase.get("phase_type")
 
-            # 🔽 Normalize case and naming to match AdaptiveChat
+            # Normalize
             if phase_type:
                 phase_type = phase_type.lower()
                 if phase_type == "flashcards":
@@ -115,14 +148,13 @@ async def mentor_router(req: Request):
 
             next_react = phase.get("react_order")
 
-            # 3️⃣ Start pointer for this react_order
             safe_rpc("update_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
                 "p_react_order": next_react
             })
 
-            logging.info(f"🕒 Pointer updated to start react_order={next_react}")
+            logging.info(f"🕒 Pointer updated → react_order={next_react}")
             logging.info(f"🧩 Normalized phase_type → {phase_type}")
 
             return {
@@ -143,7 +175,6 @@ async def mentor_router(req: Request):
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
-            # 1️⃣ Get current pointer (to identify react_order)
             pointer = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
@@ -153,16 +184,14 @@ async def mentor_router(req: Request):
 
             current_react = pointer.data[0]["react_order"]
 
-            # 2️⃣ Mark current pointer complete
             safe_rpc("complete_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
                 "p_react_order": current_react,
-                "p_is_correct": is_correct  # ✅ pass correctness
+                "p_is_correct": is_correct
             })
             logging.info(f"✅ Completed pointer react_order={current_react}, is_correct={is_correct}")
 
-            # 3️⃣ Get next phase content
             next_phase = safe_rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": current_react,
@@ -177,19 +206,17 @@ async def mentor_router(req: Request):
             next_react = phase.get("react_order")
             phase_type = phase.get("phase_type")
 
-            # 🔽 Normalize case and naming to match AdaptiveChat
             if phase_type:
                 phase_type = phase_type.lower()
                 if phase_type == "flashcards":
                     phase_type = "flashcard"
 
-            # 4️⃣ Start new pointer for next react_order
             safe_rpc("update_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
                 "p_react_order": next_react
             })
-            logging.info(f"🕒 New pointer started for react_order={next_react}")
+            logging.info(f"🕒 New pointer started → react_order={next_react}")
             logging.info(f"🧩 Normalized phase_type → {phase_type}")
 
             return {
