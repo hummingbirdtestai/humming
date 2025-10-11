@@ -1,6 +1,6 @@
 # main.py
 # ──────────────────────────────────────────────
-# 🐦 Hummingbird FastAPI — clean final version
+# 🐦 Hummingbird FastAPI — clean final version (with phase_type normalization)
 # ──────────────────────────────────────────────
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -106,6 +106,13 @@ async def mentor_router(req: Request):
 
             phase = phase_res.data[0]
             phase_type = phase.get("phase_type")
+
+            # 🔽 Normalize case and naming to match AdaptiveChat
+            if phase_type:
+                phase_type = phase_type.lower()
+                if phase_type == "flashcards":
+                    phase_type = "flashcard"
+
             next_react = phase.get("react_order")
 
             # 3️⃣ Start pointer for this react_order
@@ -116,6 +123,7 @@ async def mentor_router(req: Request):
             })
 
             logging.info(f"🕒 Pointer updated to start react_order={next_react}")
+            logging.info(f"🧩 Normalized phase_type → {phase_type}")
 
             return {
                 "type": phase_type,
@@ -169,6 +177,12 @@ async def mentor_router(req: Request):
             next_react = phase.get("react_order")
             phase_type = phase.get("phase_type")
 
+            # 🔽 Normalize case and naming to match AdaptiveChat
+            if phase_type:
+                phase_type = phase_type.lower()
+                if phase_type == "flashcards":
+                    phase_type = "flashcard"
+
             # 4️⃣ Start new pointer for next react_order
             safe_rpc("update_pointer_status", {
                 "p_student_id": user_id,
@@ -176,6 +190,7 @@ async def mentor_router(req: Request):
                 "p_react_order": next_react
             })
             logging.info(f"🕒 New pointer started for react_order={next_react}")
+            logging.info(f"🧩 Normalized phase_type → {phase_type}")
 
             return {
                 "type": phase_type,
