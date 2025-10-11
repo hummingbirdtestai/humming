@@ -63,36 +63,25 @@ def root():
     return {"status": "Hummingbird FastAPI running 🐦", "ok": True}
 
 # ──────────────────────────────────────────────
-# 🧩 Submit MCQ Answer — Direct UPSERT into Supabase
+# 🧩 Submit MCQ Answer — Direct UPSERT into Supabase (5-field mode)
 # ──────────────────────────────────────────────
 @app.post("/submit_mcq_answer")
 async def submit_mcq_answer(request: Request):
-    """Receives MCQ attempt from frontend and UPSERTS into student_mcq_attempts."""
+    """Receives MCQ attempt (5 fields) and UPSERTS into student_mcq_attempts."""
     try:
         data = await request.json()
         logging.info(f"🧾 MCQ Attempt Payload → {data}")
 
         response = supabase.table("student_mcq_attempts").upsert({
             "student_id": data.get("p_student_id"),
-            "subject_id": data.get("p_subject_id"),
-            "chapter_id": data.get("p_chapter_id"),
-            "topic_id": data.get("p_topic_id"),
-            "vertical_id": data.get("p_vertical_id"),
-            "phase_id": data.get("p_phase_id"),
-            "react_order": data.get("p_react_order"),
             "mcq_uuid": data.get("p_mcq_uuid"),
-            "mcq_key": data.get("p_mcq_key"),
             "selected_option": data.get("p_selected_option"),
             "correct_answer": data.get("p_correct_answer"),
-            "is_correct": data.get("p_is_correct"),
-            "learning_gap": data.get("p_learning_gap"),
-            "mcq_category": data.get("p_mcq_category", "concept"),
-            "hyf_uuid": data.get("p_hyf_uuid"),
+            "is_correct": data.get("p_is_correct")
         }).execute()
 
-        logging.info("✅ MCQ upserted successfully in student_mcq_attempts.")
+        logging.info("✅ MCQ upserted successfully (5-field mode).")
         return {"status": "success", "details": response.data}
-
     except Exception as e:
         logging.error(f"❌ Error in /submit_mcq_answer: {e}")
         return {"status": "error", "message": str(e)}
