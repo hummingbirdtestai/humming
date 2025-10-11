@@ -93,6 +93,7 @@ async def submit_mcq_answer(request: Request):
 async def mentor_router(req: Request):
     """Main endpoint handling AdaptiveChat intents."""
     try:
+        logging.info(f"🧠 [mentor_router] Raw JSON received: {json.dumps(data, indent=2)}")
         data = await req.json()
     except Exception as e:
         logging.error(f"❌ Invalid JSON: {e}")
@@ -172,6 +173,7 @@ async def mentor_router(req: Request):
                 return {"error": "No active pointer found"}
 
             current_react = pointer.data[0]["react_order"]
+            logging.info(f"📚 [NEXT Flow] get_phase_content returned react_order={next_phase.data[0].get('react_order') if next_phase and next_phase.data else None}")
 
             safe_rpc("complete_pointer_status", {
                 "p_student_id": user_id,
@@ -250,3 +252,4 @@ async def mentor_router(req: Request):
     # ──────────────────────────────────────────────
     else:
         return {"error": f"Unknown intent: {intent}"}
+
