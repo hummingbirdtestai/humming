@@ -45,6 +45,7 @@ app.add_middleware(
 def safe_rpc(name: str, payload: dict):
     """Executes a Supabase RPC safely and logs result."""
     try:
+        logging.info(f"🧩 Executing RPC: {name} with payload → {payload}")
         res = supabase.rpc(name, payload).execute()
         if hasattr(res, "data") and res.data is not None:
             logging.info(f"✅ RPC {name} executed successfully")
@@ -70,7 +71,7 @@ async def submit_mcq_answer(request: Request):
     """Receives MCQ attempt (5 fields) and UPSERTS into student_mcq_attempts."""
     try:
         data = await request.json()
-        logging.info(f"🧾 MCQ Attempt Payload → {data}")
+        logging.info(f"🧾 MCQ Attempt Payload → {json.dumps(data, indent=2)}")
 
         response = supabase.table("student_mcq_attempts").upsert({
             "student_id": data.get("p_student_id"),
@@ -93,8 +94,8 @@ async def submit_mcq_answer(request: Request):
 async def mentor_router(req: Request):
     """Main endpoint handling AdaptiveChat intents."""
     try:
-        logging.info(f"🧠 [mentor_router] Raw JSON received: {json.dumps(data, indent=2)}")
         data = await req.json()
+        logging.info(f"🧠 [mentor_router] Raw JSON received:\n{json.dumps(data, indent=2)}")
     except Exception as e:
         logging.error(f"❌ Invalid JSON: {e}")
         return {"error": "Invalid JSON payload"}
@@ -117,6 +118,8 @@ async def mentor_router(req: Request):
             })
             react_order = pointer.data[0]["react_order"] if pointer and pointer.data else None
             is_completed = pointer.data[0]["is_completed"] if pointer and pointer.data else None
+
+            logging.info(f"🪄 [START/RESUME] react_order={react_order}, is_completed={is_completed}")
 
             phase_res = safe_rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
@@ -173,7 +176,8 @@ async def mentor_router(req: Request):
                 return {"error": "No active pointer found"}
 
             current_react = pointer.data[0]["react_order"]
-            logging.info(f"📚 [NEXT Flow] get_phase_content returned react_order={next_phase.data[0].get('react_order') if next_phase and next_phase.data else None}")
+
+            logging.info(f"➡️ [NEXT Flow] is_correct received = {is_correct}")
 
             safe_rpc("complete_pointer_status", {
                 "p_student_id": user_id,
@@ -189,6 +193,7 @@ async def mentor_router(req: Request):
                 "p_is_completed": True,
                 "p_is_correct": is_correct
             })
+
             if not next_phase or not next_phase.data or next_phase.data[0]["react_order"] is None:
                 logging.info("🎉 Chapter complete — no further content")
                 return {"message": "🎉 Chapter completed!"}
@@ -196,6 +201,8 @@ async def mentor_router(req: Request):
             phase = next_phase.data[0]
             next_react = phase.get("react_order")
             phase_type = phase.get("phase_type")
+
+            logging.info(f"📚 [NEXT Flow] get_phase_content returned react_order={next_react}")
 
             if phase_type:
                 phase_type = phase_type.lower()
@@ -231,11 +238,13 @@ async def mentor_router(req: Request):
         if not q:
             return {"error": "No question provided"}
         try:
+            logging.info(f"💬 [ASK_DOUBT] question={q}")
             ans = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": q}]
             )
             reply = ans.choices[0].message.content
+            logging.info(f"💡 GPT reply: {reply[:200]}...")
             supabase.table("student_doubts").insert({
                 "user_id": user_id,
                 "chapter_id": chapter_id,
@@ -251,5 +260,5 @@ async def mentor_router(req: Request):
     # ⚠️ Unknown intent
     # ──────────────────────────────────────────────
     else:
+        logging.warning(f"⚠️ Unknown intent received → {intent}")
         return {"error": f"Unknown intent: {intent}"}
-
