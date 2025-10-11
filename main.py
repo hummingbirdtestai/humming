@@ -1,3 +1,7 @@
+# main.py
+# ──────────────────────────────────────────────
+# 🐦 Hummingbird FastAPI — clean final version
+# ──────────────────────────────────────────────
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
@@ -8,16 +12,25 @@ import logging
 import json
 
 # ──────────────────────────────────────────────
-# 🔧 ENV + LOGGING SETUP
+# ⚙️ ENV + LOGGING
 # ──────────────────────────────────────────────
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+
+if not all([SUPABASE_URL, SUPABASE_KEY, OPENAI_KEY]):
+    logging.warning("⚠️ Missing environment variables!")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+openai_client = OpenAI(api_key=OPENAI_KEY)
+
 # ──────────────────────────────────────────────
-# ⚙️ FASTAPI APP + CORS
+# 🧩 FASTAPI SETUP
 # ──────────────────────────────────────────────
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,156 +40,90 @@ app.add_middleware(
 )
 
 # ──────────────────────────────────────────────
-# 🌐 CLIENT INITIALIZATION
-# ──────────────────────────────────────────────
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-
-if not all([SUPABASE_URL, SUPABASE_KEY, OPENAI_KEY]):
-    logging.warning("⚠️ One or more environment variables missing!")
-
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-client = OpenAI(api_key=OPENAI_KEY)
-
-# ──────────────────────────────────────────────
-# 🪶 FAULT-TOLERANT SUPABASE WRAPPER
+# 🪶 Utility: Safe RPC wrapper
 # ──────────────────────────────────────────────
 def safe_rpc(name: str, payload: dict):
-    """Execute Supabase RPC safely with logging and None fallback."""
+    """Executes a Supabase RPC safely and logs result."""
     try:
         res = supabase.rpc(name, payload).execute()
-        if not hasattr(res, "data"):
-            logging.error(f"❌ RPC {name} returned unexpected response type: {type(res)}")
-            return None
-        if res.data is None:
-            logging.warning(f"⚠️ RPC {name} returned no data.")
-            return None
-        logging.info(f"✅ RPC {name} executed successfully.")
-        return res
+        if hasattr(res, "data") and res.data is not None:
+            logging.info(f"✅ RPC {name} executed successfully")
+            return res
+        logging.warning(f"⚠️ RPC {name} returned no data")
+        return None
     except Exception as e:
-        logging.error(f"⚠️ RPC {name} threw exception: {e}")
+        logging.error(f"❌ RPC {name} failed: {e}")
         return None
 
 # ──────────────────────────────────────────────
-# 🏠 ROOT ENDPOINT
+# 🏠 Root — Health Check
 # ──────────────────────────────────────────────
 @app.get("/")
 def root():
-    logging.info("🩵 Root route called — health check OK.")
     return {"status": "Hummingbird FastAPI running 🐦", "ok": True}
 
 # ──────────────────────────────────────────────
-# 🧠 MAIN ROUTER
+# 🧠 Mentor API Router
 # ──────────────────────────────────────────────
 @app.post("/mentor_api")
 async def mentor_router(req: Request):
-    """Main endpoint that receives AdaptiveChat intents from frontend."""
+    """Main endpoint handling AdaptiveChat intents."""
     try:
         data = await req.json()
     except Exception as e:
-        logging.error(f"❌ Failed to parse JSON: {e}")
+        logging.error(f"❌ Invalid JSON: {e}")
         return {"error": "Invalid JSON payload"}
 
     intent = data.get("intent")
     user_id = data.get("user_id")
     chapter_id = data.get("chapter_id")
+    is_correct = data.get("is_correct")  # only relevant for MCQ completion
 
-    logging.info(f"📩 Incoming intent={intent} | user={user_id} | chapter={chapter_id}")
-    logging.debug(f"🧾 Full payload → {json.dumps(data, indent=2)}")
+    logging.info(f"📩 Intent={intent} | User={user_id} | Chapter={chapter_id}")
 
     # ──────────────────────────────────────────────
     # 🟢 START / RESUME FLOW
     # ──────────────────────────────────────────────
-    if intent in ("start", "resume", "get_phase"):
+    if intent in ("start", "resume"):
         try:
-            pointer_res = safe_rpc("get_pointer_status", {
+            # 1️⃣ Get pointer status
+            pointer = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
             })
-            logging.info(f"🧭 get_pointer_status → {pointer_res.data}")
+            react_order = pointer.data[0]["react_order"] if pointer and pointer.data else None
+            is_completed = pointer.data[0]["is_completed"] if pointer and pointer.data else None
 
-            react_order = pointer_res.data[0]["react_order"] if pointer_res.data else None
-            is_completed = pointer_res.data[0]["is_completed"] if pointer_res.data else None
-
-            phase_res = supabase.rpc("get_phase_content", {
+            # 2️⃣ Get current or first phase
+            phase_res = safe_rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": react_order,
-                "p_is_completed": is_completed
-            }).execute()
-            logging.info(f"📚 get_phase_content → {len(phase_res.data)} rows")
-
-            if not phase_res.data:
+                "p_is_completed": is_completed,
+                "p_is_correct": None
+            })
+            if not phase_res or not phase_res.data:
                 return {"error": "No phase content found"}
 
             phase = phase_res.data[0]
             phase_type = phase.get("phase_type")
+            next_react = phase.get("react_order")
 
-            if phase_type in ("conversation", "mcq"):
-                tracker_res = supabase.rpc("get_local_tracker_status", {
-                    "p_student_id": user_id,
-                    "p_phase_id": phase.get("phase_id")
-                }).execute()
-                if tracker_res.data:
-                    tracker_row = tracker_res.data[0]
-                    cached_meta = tracker_row.get("meta")
-                    if cached_meta and cached_meta != {}:
-                        logging.info(f"⚡ Using cached meta for {phase_type} phase_id={phase.get('phase_id')}")
-                        phase["phase_content"] = cached_meta
-                    else:
-                        logging.info(f"ℹ️ No cached meta found for {phase_type}, using DB content.")
-
-            phase_json = phase.get("phase_content") or {}
-            logging.info(f"🧩 Recognized phase_type={phase_type}")
-
-            if phase_type == "conversation":
-                total_hyfs = len(phase_json.get("HYFs", []))
-                supabase.rpc("update_local_tracker_status", {
-                    "p_student_id": user_id,
-                    "p_phase_id": phase.get("phase_id"),
-                    "p_chapter_id": chapter_id,
-                    "p_phase_type": phase_type,
-                    "p_tracker_type": "conversation",
-                    "p_current_hyf_index": 0,
-                    "p_total_hyfs": total_hyfs,
-                    "p_meta": json.dumps(phase_json),
-                    "p_is_completed": False
-                }).execute()
-
-            elif phase_type == "mcq":
-                total_mcqs = len(phase_json if isinstance(phase_json, list) else [])
-                supabase.rpc("update_local_tracker_status", {
-                    "p_student_id": user_id,
-                    "p_phase_id": phase.get("phase_id"),
-                    "p_chapter_id": chapter_id,
-                    "p_phase_type": phase_type,
-                    "p_tracker_type": "concept_mcq",
-                    "p_current_mcq_index": 0,
-                    "p_total_mcqs": total_mcqs,
-                    "p_meta": json.dumps(phase_json),
-                    "p_is_completed": False
-                }).execute()
-
-            react_order = phase.get("react_order")
-            supabase.rpc("update_pointer_status", {
+            # 3️⃣ Start pointer for this react_order
+            safe_rpc("update_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
-                "p_react_order": react_order
-            }).execute()
-            logging.info(f"🕒 update_pointer_status → {react_order}")
+                "p_react_order": next_react
+            })
 
-            phase_json = phase.get("phase_content") or {}
-            data_block = {**phase_json, "phase_id": phase.get("phase_id")}
-            if phase_type == "concept":
-                data_block["current"] = phase.get("current")
-                data_block["total"] = phase.get("total")
+            logging.info(f"🕒 Pointer updated to start react_order={next_react}")
 
             return {
                 "type": phase_type,
-                "data": data_block,
+                "data": phase.get("phase_content"),
+                "react_order": next_react,
                 "messages": [
                     {"sender": "ai", "type": "text", "content": f"Starting {phase_type}"}
-                ],
+                ]
             }
 
         except Exception as e:
@@ -184,88 +131,59 @@ async def mentor_router(req: Request):
             return {"error": str(e)}
 
     # ──────────────────────────────────────────────
-    # 🟣 NEXT PHASE FLOW (✅ CORRECTED ORDER)
+    # 🟣 NEXT FLOW
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
-            # 1️⃣ Identify the current open pointer
-            pointer_res = safe_rpc("get_pointer_status", {
+            # 1️⃣ Get current pointer (to identify react_order)
+            pointer = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
             })
-            if not pointer_res or not pointer_res.data:
-                return {"error": "No pointer found"}
+            if not pointer or not pointer.data:
+                return {"error": "No active pointer found"}
 
-            current_react_order = pointer_res.data[0]["react_order"]
+            current_react = pointer.data[0]["react_order"]
 
-            # 2️⃣ Mark current phase complete FIRST
-            supabase.rpc("complete_pointer_status", {
+            # 2️⃣ Mark current pointer complete
+            safe_rpc("complete_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
-                "p_react_order": current_react_order
-            }).execute()
-            logging.info(f"✅ Completed phase react_order={current_react_order}")
-
-            # 3️⃣ Fetch pointer again (reflects completed state)
-            updated_pointer = safe_rpc("get_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id
+                "p_react_order": current_react,
+                "p_is_correct": is_correct  # ✅ pass correctness
             })
-            if not updated_pointer or not updated_pointer.data:
-                return {"error": "No updated pointer after completion"}
+            logging.info(f"✅ Completed pointer react_order={current_react}, is_correct={is_correct}")
 
-            # 4️⃣ Get next phase content
-            next_phase_res = supabase.rpc("get_phase_content", {
+            # 3️⃣ Get next phase content
+            next_phase = safe_rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
-                "p_react_order": current_react_order,
-                "p_is_completed": True
-            }).execute()
-            if not next_phase_res.data:
+                "p_react_order": current_react,
+                "p_is_completed": True,
+                "p_is_correct": is_correct
+            })
+            if not next_phase or not next_phase.data or next_phase.data[0]["react_order"] is None:
+                logging.info("🎉 Chapter complete — no further content")
                 return {"message": "🎉 Chapter completed!"}
 
-            next_phase = next_phase_res.data[0]
-            next_react_order = next_phase.get("react_order")
-            next_type = next_phase.get("phase_type")
+            phase = next_phase.data[0]
+            next_react = phase.get("react_order")
+            phase_type = phase.get("phase_type")
 
-            # 5️⃣ Start new pointer cleanly
-            supabase.rpc("update_pointer_status", {
+            # 4️⃣ Start new pointer for next react_order
+            safe_rpc("update_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
-                "p_react_order": next_react_order
-            }).execute()
-            logging.info(f"🕒 Started new pointer react_order={next_react_order}")
-
-            # 6️⃣ If next phase needs tracker
-            if next_type in ("conversation", "mcq"):
-                phase_json = next_phase.get("phase_content") or {}
-                total_hyfs = len(phase_json.get("HYFs", [])) if next_type == "conversation" else 0
-                total_mcqs = len(phase_json if isinstance(phase_json, list) else []) if next_type == "mcq" else 0
-
-                supabase.rpc("update_local_tracker_status", {
-                    "p_student_id": user_id,
-                    "p_phase_id": next_phase.get("phase_id"),
-                    "p_chapter_id": chapter_id,
-                    "p_phase_type": next_type,
-                    "p_tracker_type": "conversation" if next_type == "conversation" else "concept_mcq",
-                    "p_total_hyfs": total_hyfs,
-                    "p_total_mcqs": total_mcqs,
-                    "p_meta": json.dumps(phase_json),
-                    "p_is_completed": False
-                }).execute()
-                logging.info(f"📊 Tracker created for {next_type} phase_id={next_phase.get('phase_id')}")
-
-            # 7️⃣ Return structured response
-            data_block = {**(next_phase.get("phase_content") or {}), "phase_id": next_phase.get("phase_id")}
-            if next_type == "concept":
-                data_block["current"] = next_phase.get("current")
-                data_block["total"] = next_phase.get("total")
+                "p_react_order": next_react
+            })
+            logging.info(f"🕒 New pointer started for react_order={next_react}")
 
             return {
-                "type": next_type,
-                "data": data_block,
+                "type": phase_type,
+                "data": phase.get("phase_content"),
+                "react_order": next_react,
                 "messages": [
-                    {"sender": "ai", "type": "text", "content": f"Next {next_type}"}
-                ],
+                    {"sender": "ai", "type": "text", "content": f"Next {phase_type}"}
+                ]
             }
 
         except Exception as e:
@@ -273,14 +191,14 @@ async def mentor_router(req: Request):
             return {"error": str(e)}
 
     # ──────────────────────────────────────────────
-    # 💬 CHAT (ASK DOUBT)
+    # 💬 CHAT / ASK DOUBT
     # ──────────────────────────────────────────────
     elif intent in ("chat", "ask_doubt"):
         q = data.get("question", "")
         if not q:
             return {"error": "No question provided"}
         try:
-            ans = client.chat.completions.create(
+            ans = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": q}]
             )
@@ -293,9 +211,11 @@ async def mentor_router(req: Request):
             }).execute()
             return {"reply": reply}
         except Exception as e:
-            logging.error(f"❌ GPT or Supabase error: {e}")
+            logging.error(f"❌ GPT/Supabase error: {e}")
             return {"error": str(e)}
 
+    # ──────────────────────────────────────────────
+    # ⚠️ Unknown intent
+    # ──────────────────────────────────────────────
     else:
-        logging.warning(f"⚠️ Unknown intent received: {intent}")
-        return {"error": "Unknown intent"}
+        return {"error": f"Unknown intent: {intent}"}
