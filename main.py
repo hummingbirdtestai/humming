@@ -103,9 +103,10 @@ async def mentor_router(req: Request):
     intent = data.get("intent")
     user_id = data.get("user_id")
     chapter_id = data.get("chapter_id")
-    is_correct = data.get("is_correct")  # only relevant for MCQ completion
+    is_correct = data.get("is_correct")
+    react_order = data.get("react_order")
 
-    logging.info(f"📩 Intent={intent} | User={user_id} | Chapter={chapter_id}")
+    logging.info(f"📩 Intent={intent} | User={user_id} | Chapter={chapter_id} | ReactOrder={react_order}")
 
     # ──────────────────────────────────────────────
     # 🟢 START / RESUME FLOW
@@ -131,13 +132,9 @@ async def mentor_router(req: Request):
                 return {"error": "No phase content found"}
 
             phase = phase_res.data[0]
-            phase_type = phase.get("phase_type")
-
-            # Normalize
-            if phase_type:
-                phase_type = phase_type.lower()
-                if phase_type == "flashcards":
-                    phase_type = "flashcard"
+            phase_type = (phase.get("phase_type") or "").lower()
+            if phase_type == "flashcards":
+                phase_type = "flashcard"
 
             next_react = phase.get("react_order")
 
@@ -148,15 +145,12 @@ async def mentor_router(req: Request):
             })
 
             logging.info(f"🕒 Pointer updated → react_order={next_react}")
-            logging.info(f"🧩 Normalized phase_type → {phase_type}")
 
             return {
                 "type": phase_type,
                 "data": phase.get("phase_content"),
                 "react_order": next_react,
-                "messages": [
-                    {"sender": "ai", "type": "text", "content": f"Starting {phase_type}"}
-                ]
+                "messages": [{"sender": "ai", "type": "text", "content": f"Starting {phase_type}"}]
             }
 
         except Exception as e:
@@ -164,22 +158,22 @@ async def mentor_router(req: Request):
             return {"error": str(e)}
 
     # ──────────────────────────────────────────────
-    # 🟣 NEXT FLOW — Corrected Sequence
+    # 🟣 NEXT FLOW — Final Correct Sequence
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
-            logging.info(f"➡️ [NEXT Flow] Triggered with is_correct={is_correct}")
+            logging.info(f"➡️ [NEXT Flow] Triggered with react_order={react_order}, is_correct={is_correct}")
 
-            # 1️⃣ Mark current phase as completed FIRST
-            complete_res = safe_rpc("complete_pointer_status", {
+            # 1️⃣ Mark current phase as completed
+            safe_rpc("complete_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
-                "p_react_order": None,  # let SQL find latest incomplete one
+                "p_react_order": react_order,   # ✅ passed from AdaptiveChat
                 "p_is_correct": is_correct
             })
-            logging.info("✅ complete_pointer_status executed first")
+            logging.info(f"✅ Completed pointer react_order={react_order}")
 
-            # 2️⃣ Get the latest pointer status after marking complete
+            # 2️⃣ Get latest pointer after marking complete
             pointer_after = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
@@ -190,7 +184,7 @@ async def mentor_router(req: Request):
             last_react = pointer_after.data[0]["react_order"]
             logging.info(f"📍 Latest pointer after completion → {last_react}")
 
-            # 3️⃣ Fetch next phase content
+            # 3️⃣ Get next phase content
             next_phase = safe_rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
                 "p_react_order": last_react,
@@ -205,22 +199,19 @@ async def mentor_router(req: Request):
             next_react = phase.get("react_order")
             phase_type = (phase.get("phase_type") or "").lower()
 
-            # 4️⃣ Start tracking the new phase
+            # 4️⃣ Update pointer for new phase
             safe_rpc("update_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
                 "p_react_order": next_react
             })
             logging.info(f"🕒 New pointer started → react_order={next_react}")
-            logging.info(f"🧩 Normalized phase_type → {phase_type}")
 
             return {
                 "type": phase_type,
                 "data": phase.get("phase_content"),
                 "react_order": next_react,
-                "messages": [
-                    {"sender": "ai", "type": "text", "content": f"Next {phase_type}"}
-                ]
+                "messages": [{"sender": "ai", "type": "text", "content": f"Next {phase_type}"}]
             }
 
         except Exception as e:
