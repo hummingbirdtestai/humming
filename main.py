@@ -164,60 +164,48 @@ async def mentor_router(req: Request):
             return {"error": str(e)}
 
     # ──────────────────────────────────────────────
-    # 🟣 NEXT FLOW (UPDATED SEQUENCE)
+    # 🟣 NEXT FLOW — Corrected Sequence
     # ──────────────────────────────────────────────
     elif intent == "next":
         try:
             logging.info(f"➡️ [NEXT Flow] Triggered with is_correct={is_correct}")
 
-            # 1️⃣ Get current pointer first
-            current_pointer = safe_rpc("get_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id
-            })
-            if not current_pointer or not current_pointer.data:
-                return {"error": "No active pointer found"}
-
-            current_react = str(current_pointer.data[0]["react_order"])
-            logging.info(f"📍 Current react_order to complete → {current_react}")
-
-            # 2️⃣ Mark current pointer as completed
+            # 1️⃣ Mark current phase as completed FIRST
             complete_res = safe_rpc("complete_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
-                "p_react_order": current_react,
+                "p_react_order": None,  # let SQL find latest incomplete one
                 "p_is_correct": is_correct
             })
-            logging.info(f"✅ complete_pointer_status done for react_order={current_react}")
+            logging.info("✅ complete_pointer_status executed first")
 
-            # 3️⃣ Now re-check pointer status (after marking completion)
-            updated_pointer = safe_rpc("get_pointer_status", {
+            # 2️⃣ Get the latest pointer status after marking complete
+            pointer_after = safe_rpc("get_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id
             })
-            if not updated_pointer or not updated_pointer.data:
-                return {"error": "Pointer not found after completion"}
+            if not pointer_after or not pointer_after.data:
+                return {"error": "No pointer found after completion"}
 
-            latest_react = updated_pointer.data[0]["react_order"]
-            logging.info(f"📚 After completion, pointer now at → {latest_react}")
+            last_react = pointer_after.data[0]["react_order"]
+            logging.info(f"📍 Latest pointer after completion → {last_react}")
 
-            # 4️⃣ Fetch next phase content
+            # 3️⃣ Fetch next phase content
             next_phase = safe_rpc("get_phase_content", {
                 "p_chapter_id": chapter_id,
-                "p_react_order": current_react,
+                "p_react_order": last_react,
                 "p_is_completed": True,
                 "p_is_correct": is_correct
             })
-
             if not next_phase or not next_phase.data or next_phase.data[0]["react_order"] is None:
                 logging.info("🎉 Chapter complete — no further content")
                 return {"message": "🎉 Chapter completed!"}
 
             phase = next_phase.data[0]
             next_react = phase.get("react_order")
-            phase_type = phase.get("phase_type")
+            phase_type = (phase.get("phase_type") or "").lower()
 
-            # 5️⃣ Start tracking next phase
+            # 4️⃣ Start tracking the new phase
             safe_rpc("update_pointer_status", {
                 "p_student_id": user_id,
                 "p_chapter_id": chapter_id,
@@ -227,7 +215,7 @@ async def mentor_router(req: Request):
             logging.info(f"🧩 Normalized phase_type → {phase_type}")
 
             return {
-                "type": (phase_type or "").lower(),
+                "type": phase_type,
                 "data": phase.get("phase_content"),
                 "react_order": next_react,
                 "messages": [
