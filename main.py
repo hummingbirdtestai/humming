@@ -1,6 +1,7 @@
 # main.py
 # ──────────────────────────────────────────────
-# 🐦 Hummingbird FastAPI — Final Version (with direct MCQ UPSERT + Mentor API)
+# 🐦 Hummingbird FastAPI — Final Production Version
+# (Pointer + MCQ UPSERT + Mentor Conversation Block)
 # ──────────────────────────────────────────────
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 import os
 import logging
 import json
+import datetime
+import uuid
 
 # ──────────────────────────────────────────────
 # ⚙️ ENV + LOGGING
@@ -30,7 +33,8 @@ openai_client = OpenAI(api_key=OPENAI_KEY)
 # ──────────────────────────────────────────────
 # 🧩 FASTAPI SETUP
 # ──────────────────────────────────────────────
-app = FastAPI()
+app = FastAPI(title="🐦 Hummingbird FastAPI")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,14 +47,11 @@ app.add_middleware(
 # 🪶 Utility: Safe RPC wrapper
 # ──────────────────────────────────────────────
 def safe_rpc(name: str, payload: dict):
-    """Executes a Supabase RPC safely and logs result."""
     try:
         logging.info(f"🧩 Executing RPC: {name} with payload → {payload}")
         res = supabase.rpc(name, payload).execute()
         if hasattr(res, "data") and res.data is not None:
-            logging.info(f"✅ RPC {name} executed successfully")
             return res
-        logging.warning(f"⚠️ RPC {name} returned no data")
         return None
     except Exception as e:
         logging.error(f"❌ RPC {name} failed: {e}")
@@ -64,11 +65,10 @@ def root():
     return {"status": "Hummingbird FastAPI running 🐦", "ok": True}
 
 # ──────────────────────────────────────────────
-# 🧩 Submit MCQ Answer — Direct UPSERT into Supabase (5-field mode)
+# 🧩 Submit MCQ Answer — unchanged
 # ──────────────────────────────────────────────
 @app.post("/submit_mcq_answer")
 async def submit_mcq_answer(request: Request):
-    """Receives MCQ attempt (5 fields) and UPSERTS into student_mcq_attempts."""
     try:
         data = await request.json()
         logging.info(f"🧾 MCQ Attempt Payload → {json.dumps(data, indent=2)}")
@@ -81,172 +81,143 @@ async def submit_mcq_answer(request: Request):
             "is_correct": data.get("p_is_correct")
         }).execute()
 
-        logging.info("✅ MCQ upserted successfully (5-field mode).")
+        logging.info("✅ MCQ upserted successfully.")
         return {"status": "success", "details": response.data}
     except Exception as e:
         logging.error(f"❌ Error in /submit_mcq_answer: {e}")
         return {"status": "error", "message": str(e)}
 
 # ──────────────────────────────────────────────
-# 🧠 Mentor API Router (AdaptiveChat Flow)
+# 💬 Mentor Chat / Ask Doubt (Conversation Block Mode)
 # ──────────────────────────────────────────────
-@app.post("/mentor_api")
-async def mentor_router(req: Request):
-    """Main endpoint handling AdaptiveChat intents."""
+@app.post("/mentor_chat")
+async def mentor_chat(request: Request):
+    """
+    Handles both first and subsequent chat messages.
+    Expected payloads:
+    ▶ First message:
+       {
+         "user_id": "...",
+         "student_name": "Manu",
+         "chapter_id": "...",
+         "phase_json": {...},
+         "question": "Why does gymnosperm xylem lack vessels?"
+       }
+    ▶ Next messages:
+       {
+         "user_id": "...",
+         "student_name": "Manu",
+         "chapter_id": "...",
+         "block_id": "...",
+         "question": "Then what about phloem?"
+       }
+    """
     try:
-        data = await req.json()
-        logging.info(f"🧠 [mentor_router] Raw JSON received:\n{json.dumps(data, indent=2)}")
+        data = await request.json()
+        logging.info(f"💬 Incoming payload:\n{json.dumps(data, indent=2)}")
     except Exception as e:
         logging.error(f"❌ Invalid JSON: {e}")
         return {"error": "Invalid JSON payload"}
 
-    intent = data.get("intent")
     user_id = data.get("user_id")
+    student_name = data.get("student_name", "Student")
     chapter_id = data.get("chapter_id")
-    is_correct = data.get("is_correct")
-    react_order = data.get("react_order")
+    question = data.get("question", "").strip()
+    phase_json = data.get("phase_json", {})
+    block_id = data.get("block_id")  # present if continuing same conversation
 
-    logging.info(f"📩 Intent={intent} | User={user_id} | Chapter={chapter_id} | ReactOrder={react_order}")
+    if not user_id or not question:
+        return {"error": "Missing user_id or question"}
 
-    # ──────────────────────────────────────────────
-    # 🟢 START / RESUME FLOW
-    # ──────────────────────────────────────────────
-    if intent in ("start", "resume"):
-        try:
-            pointer = safe_rpc("get_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id
-            })
-            react_order = pointer.data[0]["react_order"] if pointer and pointer.data else None
-            is_completed = pointer.data[0]["is_completed"] if pointer and pointer.data else None
+    try:
+        # 🧩 Prepare base prompt (used only once per block)
+        mentor_prompt = (
+            "You are AI Mentor, an expert teacher with years of experience tutoring students "
+            "for NEET exams. The student is asking a doubt related to the pre-loaded study content "
+            "given in the JSON below.\n\n"
+            "Use that JSON context and the student’s question to give a clear, NCERT-aligned explanation with:\n"
+            "• Simple step-by-step reasoning\n"
+            "• High-yield facts (tables or lists)\n"
+            "• Short anecdotes or analogies if helpful\n"
+            "• Formulas and key terms in **bold** / *italic* with proper Unicode symbols\n"
+            "• Next question suggestion and Next info tip at the end\n\n"
+            "Output should be friendly, precise, and exam-oriented — like a real teacher guiding a student in person."
+        )
 
-            logging.info(f"🪄 [START/RESUME] react_order={react_order}, is_completed={is_completed}")
+        # ──────────────────────────────────────────────
+        # 🟢 FIRST MESSAGE → new conversation block
+        # ──────────────────────────────────────────────
+        if not block_id:
+            block_id = str(uuid.uuid4())
+            messages = [
+                {"role": "system", "content": mentor_prompt},
+                {"role": "user", "content": f"Student Name: {student_name}"},
+                {"role": "user", "content": f"Context JSON: {json.dumps(phase_json)}"},
+                {"role": "user", "content": f"Question: {question}"}
+            ]
 
-            phase_res = safe_rpc("get_phase_content", {
-                "p_chapter_id": chapter_id,
-                "p_react_order": react_order,
-                "p_is_completed": is_completed,
-                "p_is_correct": None
-            })
-            if not phase_res or not phase_res.data:
-                return {"error": "No phase content found"}
-
-            phase = phase_res.data[0]
-            phase_type = (phase.get("phase_type") or "").lower()
-            if phase_type == "flashcards":
-                phase_type = "flashcard"
-
-            next_react = phase.get("react_order")
-
-            safe_rpc("update_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id,
-                "p_react_order": next_react
-            })
-
-            logging.info(f"🕒 Pointer updated → react_order={next_react}")
-
-            return {
-                "type": phase_type,
-                "data": phase.get("phase_content"),
-                "react_order": next_react,
-                "messages": [{"sender": "ai", "type": "text", "content": f"Starting {phase_type}"}]
-            }
-
-        except Exception as e:
-            logging.error(f"❌ Error in start/resume flow: {e}")
-            return {"error": str(e)}
-
-    # ──────────────────────────────────────────────
-    # 🟣 NEXT FLOW — Final Correct Sequence
-    # ──────────────────────────────────────────────
-    elif intent == "next":
-        try:
-            logging.info(f"➡️ [NEXT Flow] Triggered with react_order={react_order}, is_correct={is_correct}")
-
-            # 1️⃣ Mark current phase as completed
-            safe_rpc("complete_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id,
-                "p_react_order": react_order,   # ✅ passed from AdaptiveChat
-                "p_is_correct": is_correct
-            })
-            logging.info(f"✅ Completed pointer react_order={react_order}")
-
-            # 2️⃣ Get latest pointer after marking complete
-            pointer_after = safe_rpc("get_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id
-            })
-            if not pointer_after or not pointer_after.data:
-                return {"error": "No pointer found after completion"}
-
-            last_react = pointer_after.data[0]["react_order"]
-            logging.info(f"📍 Latest pointer after completion → {last_react}")
-
-            # 3️⃣ Get next phase content
-            next_phase = safe_rpc("get_phase_content", {
-                "p_chapter_id": chapter_id,
-                "p_react_order": last_react,
-                "p_is_completed": True,
-                "p_is_correct": is_correct
-            })
-            if not next_phase or not next_phase.data or next_phase.data[0]["react_order"] is None:
-                logging.info("🎉 Chapter complete — no further content")
-                return {"message": "🎉 Chapter completed!"}
-
-            phase = next_phase.data[0]
-            next_react = phase.get("react_order")
-            phase_type = (phase.get("phase_type") or "").lower()
-
-            # 4️⃣ Update pointer for new phase
-            safe_rpc("update_pointer_status", {
-                "p_student_id": user_id,
-                "p_chapter_id": chapter_id,
-                "p_react_order": next_react
-            })
-            logging.info(f"🕒 New pointer started → react_order={next_react}")
-
-            return {
-                "type": phase_type,
-                "data": phase.get("phase_content"),
-                "react_order": next_react,
-                "messages": [{"sender": "ai", "type": "text", "content": f"Next {phase_type}"}]
-            }
-
-        except Exception as e:
-            logging.error(f"❌ Error in next flow: {e}")
-            return {"error": str(e)}
-
-    # ──────────────────────────────────────────────
-    # 💬 CHAT / ASK DOUBT
-    # ──────────────────────────────────────────────
-    elif intent in ("chat", "ask_doubt"):
-        q = data.get("question", "")
-        if not q:
-            return {"error": "No question provided"}
-        try:
-            logging.info(f"💬 [ASK_DOUBT] question={q}")
-            ans = openai_client.chat.completions.create(
+            completion = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[{"role": "user", "content": q}]
+                messages=messages,
+                temperature=0.7,
             )
-            reply = ans.choices[0].message.content
-            logging.info(f"💡 GPT reply: {reply[:200]}...")
-            supabase.table("student_doubts").insert({
-                "user_id": user_id,
-                "chapter_id": chapter_id,
-                "question": q,
-                "answer": reply
-            }).execute()
-            return {"reply": reply}
-        except Exception as e:
-            logging.error(f"❌ GPT/Supabase error: {e}")
-            return {"error": str(e)}
 
-    # ──────────────────────────────────────────────
-    # ⚠️ Unknown intent
-    # ──────────────────────────────────────────────
-    else:
-        logging.warning(f"⚠️ Unknown intent received → {intent}")
-        return {"error": f"Unknown intent: {intent}"}
+            reply = completion.choices[0].message.content
+            tokens_used = getattr(completion, "usage", {}).get("total_tokens") if hasattr(completion, "usage") else None
+            messages.append({"role": "assistant", "content": reply})
+
+            # 💾 Insert new conversation block
+            supabase.table("student_conversation_log").insert({
+                "user_id": user_id,
+                "student_name": student_name,
+                "chapter_id": chapter_id,
+                "block_id": block_id,
+                "prompt": question,
+                "response": reply,
+                "phase_context": phase_json,
+                "messages": messages,
+                "tokens_used": tokens_used,
+                "created_at": datetime.datetime.utcnow().isoformat(),
+            }).execute()
+
+            return {"reply": reply, "block_id": block_id, "status": "success"}
+
+        # ──────────────────────────────────────────────
+        # 🟣 CONTINUED MESSAGE → existing block
+        # ──────────────────────────────────────────────
+        else:
+            res = supabase.table("student_conversation_log").select("messages").eq("block_id", block_id).order("id", desc=True).limit(1).execute()
+            if not res.data:
+                return {"error": f"No active conversation found for block_id {block_id}"}
+
+            messages = res.data[0]["messages"]
+            if not isinstance(messages, list):
+                messages = []
+
+            # Append new question
+            messages.append({"role": "user", "content": question})
+
+            completion = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.7,
+            )
+
+            reply = completion.choices[0].message.content
+            tokens_used = getattr(completion, "usage", {}).get("total_tokens") if hasattr(completion, "usage") else None
+            messages.append({"role": "assistant", "content": reply})
+
+            # Update same block in Supabase
+            supabase.table("student_conversation_log").update({
+                "prompt": question,
+                "response": reply,
+                "messages": messages,
+                "tokens_used": tokens_used,
+                "updated_at": datetime.datetime.utcnow().isoformat(),
+            }).eq("block_id", block_id).execute()
+
+            return {"reply": reply, "block_id": block_id, "status": "success"}
+
+    except Exception as e:
+        logging.error(f"❌ Mentor Chat error: {e}")
+        return {"error": str(e)}
