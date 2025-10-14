@@ -224,3 +224,25 @@ async def mentor_chat(request: Request):
     except Exception as e:
         logging.error(f"❌ Mentor Chat error: {e}")
         return {"error": str(e)}
+
+# ──────────────────────────────────────────────
+# 🧭 Advance Pointer — simple pass-through RPC
+# ──────────────────────────────────────────────
+@app.post("/advance_pointer")
+async def advance_pointer(request: Request):
+    try:
+        data = await request.json()
+        student_id = data.get("p_student_id")
+        if not student_id:
+            return {"status": "error", "message": "Missing student_id"}
+
+        logging.info(f"➡️ advance_pointer called for {student_id}")
+
+        res = safe_rpc("advance_student_pointer", {"p_student_id": student_id})
+        if not res or not res.data:
+            return {"status": "done", "message": "🎉 Chapter complete!"}
+
+        return {"status": "success", "next_phase": res.data[0]}
+    except Exception as e:
+        logging.error(f"❌ /advance_pointer failed: {e}")
+        return {"status": "error", "message": str(e)}
