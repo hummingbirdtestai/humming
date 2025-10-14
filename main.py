@@ -65,7 +65,7 @@ def root():
     return {"status": "Hummingbird FastAPI running 🐦", "ok": True}
 
 # ──────────────────────────────────────────────
-# 🧩 Submit MCQ Answer — unchanged
+# 🧩 Submit MCQ Answer — ✅ UPDATED WITH CHAPTER_ID + REACT_ORDER
 # ──────────────────────────────────────────────
 @app.post("/submit_mcq_answer")
 async def submit_mcq_answer(request: Request):
@@ -78,7 +78,10 @@ async def submit_mcq_answer(request: Request):
             "mcq_uuid": data.get("p_mcq_uuid"),
             "selected_option": data.get("p_selected_option"),
             "correct_answer": data.get("p_correct_answer"),
-            "is_correct": data.get("p_is_correct")
+            "is_correct": data.get("p_is_correct"),
+            # 🆕 Added contextual fields
+            "chapter_id": data.get("p_chapter_id"),
+            "react_order": data.get("p_react_order"),
         }).execute()
 
         logging.info("✅ MCQ upserted successfully.")
