@@ -73,19 +73,40 @@ async def submit_mcq_answer(request: Request):
         data = await request.json()
         logging.info(f"🧾 MCQ Attempt Payload → {json.dumps(data, indent=2)}")
 
+        # Upsert attempt record
         response = supabase.table("student_mcq_attempts").upsert({
             "student_id": data.get("p_student_id"),
             "mcq_uuid": data.get("p_mcq_uuid"),
             "selected_option": data.get("p_selected_option"),
             "correct_answer": data.get("p_correct_answer"),
             "is_correct": data.get("p_is_correct"),
-            # 🆕 Added contextual fields
+            # 🆕 Context fields
             "chapter_id": data.get("p_chapter_id"),
             "react_order": data.get("p_react_order"),
         }).execute()
 
         logging.info("✅ MCQ upserted successfully.")
+
+        # 🔥 Additionally, update is_correct in pointer table using same identifiers
+        pointer_update = {
+            "student_id": data.get("p_student_id"),
+            "chapter_id": data.get("p_chapter_id"),
+            "react_order": data.get("p_react_order"),
+            "is_correct": data.get("p_is_correct")
+        }
+
+        pointer_res = supabase.table("student_phase_pointer").upsert(
+            pointer_update,
+            on_conflict="student_id,chapter_id,react_order"
+        ).execute()
+
+        if pointer_res.data:
+            logging.info(f"🧩 Pointer table is_correct updated → {data.get('p_is_correct')}")
+        else:
+            logging.warning("⚠️ Pointer upsert returned no data.")
+
         return {"status": "success", "details": response.data}
+
     except Exception as e:
         logging.error(f"❌ Error in /submit_mcq_answer: {e}")
         return {"status": "error", "message": str(e)}
@@ -97,23 +118,6 @@ async def submit_mcq_answer(request: Request):
 async def mentor_chat(request: Request):
     """
     Handles both first and subsequent chat messages.
-    Expected payloads:
-    ▶ First message:
-       {
-         "user_id": "...",
-         "student_name": "Manu",
-         "chapter_id": "...",
-         "phase_json": {...},
-         "question": "Why does gymnosperm xylem lack vessels?"
-       }
-    ▶ Next messages:
-       {
-         "user_id": "...",
-         "student_name": "Manu",
-         "chapter_id": "...",
-         "block_id": "...",
-         "question": "Then what about phloem?"
-       }
     """
     try:
         data = await request.json()
@@ -127,13 +131,12 @@ async def mentor_chat(request: Request):
     chapter_id = data.get("chapter_id")
     question = data.get("question", "").strip()
     phase_json = data.get("phase_json", {})
-    block_id = data.get("block_id")  # present if continuing same conversation
+    block_id = data.get("block_id")
 
     if not user_id or not question:
         return {"error": "Missing user_id or question"}
 
     try:
-        # 🧩 Prepare base prompt (used only once per block)
         mentor_prompt = (
             "You are AI Mentor, an expert teacher with years of experience tutoring students "
             "for NEET exams. The student is asking a doubt related to the pre-loaded study content "
@@ -147,9 +150,7 @@ async def mentor_chat(request: Request):
             "Output should be friendly, precise, and exam-oriented — like a real teacher guiding a student in person."
         )
 
-        # ──────────────────────────────────────────────
-        # 🟢 FIRST MESSAGE → new conversation block
-        # ──────────────────────────────────────────────
+        # 🟢 FIRST MESSAGE
         if not block_id:
             block_id = str(uuid.uuid4())
             messages = [
@@ -169,7 +170,6 @@ async def mentor_chat(request: Request):
             tokens_used = getattr(completion, "usage", {}).get("total_tokens") if hasattr(completion, "usage") else None
             messages.append({"role": "assistant", "content": reply})
 
-            # 💾 Insert new conversation block
             supabase.table("student_conversation_log").insert({
                 "user_id": user_id,
                 "student_name": student_name,
@@ -185,9 +185,7 @@ async def mentor_chat(request: Request):
 
             return {"reply": reply, "block_id": block_id, "status": "success"}
 
-        # ──────────────────────────────────────────────
-        # 🟣 CONTINUED MESSAGE → existing block
-        # ──────────────────────────────────────────────
+        # 🟣 CONTINUED MESSAGE
         else:
             res = supabase.table("student_conversation_log").select("messages").eq("block_id", block_id).order("id", desc=True).limit(1).execute()
             if not res.data:
@@ -197,7 +195,6 @@ async def mentor_chat(request: Request):
             if not isinstance(messages, list):
                 messages = []
 
-            # Append new question
             messages.append({"role": "user", "content": question})
 
             completion = openai_client.chat.completions.create(
@@ -210,7 +207,6 @@ async def mentor_chat(request: Request):
             tokens_used = getattr(completion, "usage", {}).get("total_tokens") if hasattr(completion, "usage") else None
             messages.append({"role": "assistant", "content": reply})
 
-            # Update same block in Supabase
             supabase.table("student_conversation_log").update({
                 "prompt": question,
                 "response": reply,
